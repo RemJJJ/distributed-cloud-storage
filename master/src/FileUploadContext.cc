@@ -22,6 +22,13 @@ FileUploadContext::FileUploadContext(const std::string &filename,
              << ", original name: " << originalFilename;
 }
 
+FileUploadContext::~FileUploadContext() {
+    if (storage_) {
+        storage_->close();
+        storage_.reset();
+    }
+}
+
 // 写入数据： 转发给LocalStorage
 void FileUploadContext::writeData(const char *data, size_t len) {
     try {

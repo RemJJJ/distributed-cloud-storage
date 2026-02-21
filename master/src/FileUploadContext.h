@@ -15,7 +15,7 @@ class FileUploadContext {
     FileUploadContext(const std::string &filename,
                       const std::string &originalFilename,
                       std::unique_ptr<FileStorage> storage = nullptr);
-    ~FileUploadContext() = default;
+    ~FileUploadContext();
 
     /// @brief 写入数据
     void writeData(const char *data, size_t len);
