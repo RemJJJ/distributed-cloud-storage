@@ -14,4 +14,10 @@ class RemoteFileStorage : public FileStorage {
     uintmax_t totalBytes() const override;
 
     std::string &filename() const override;
+
+  private:
+    std::string ip_;
+    int port_;
+    int sockfd_;
+    std::string filename_;
 };

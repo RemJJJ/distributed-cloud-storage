@@ -1,5 +1,5 @@
 #include "HttpUploadHandler.h"
-#include "RemoteFileStorage.h"
+#include "../../common/include/RemoteFileStorage.h"
 
 HttpUploadHandler::HttpUploadHandler(int numThreads, const std::string &dbHost,
                                      const std::string &dbUser,
@@ -8,8 +8,8 @@ HttpUploadHandler::HttpUploadHandler(int numThreads, const std::string &dbHost,
                                      unsigned int dbPort)
     : threadPool_("UploadHandler"), uploadDir_("uploads"),
       mappingFile_("uploads/filename_mapping.json"), activeRequests_(0),
-      dbHost(dbHost), dbUser(dbUser), dbPassword(dbPassword), dbName(dbName),
-      dbPort(dbPort), mysql(NULL) {
+      mysql(NULL), dbHost(dbHost), dbUser(dbUser), dbPassword(dbPassword),
+      dbName(dbName), dbPort(dbPort) {
     threadPool_.start(numThreads);
 
     // 初始化节点管理器
