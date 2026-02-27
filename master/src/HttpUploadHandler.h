@@ -37,9 +37,10 @@
 using namespace fileserver;
 using namespace fileserver::net;
 using json = nlohmann::json;
-namespace fs = std::experimental::filesystem;
+namespace fs = std::filesystem;
 
-class HttpUploadHandler {
+class HttpUploadHandler
+    : public std::enable_shared_from_this<HttpUploadHandler> {
   private:
     ThreadPool threadPool_;                    // 线程池
     std::shared_ptr<NodeManager> nodeManager_; // 节点管理器
@@ -59,9 +60,9 @@ class HttpUploadHandler {
     unsigned int dbPort;
 
     // 定义处理函数类型
-    using RequestHandler = bool (HttpUploadHandler::*)(const TcpConnectionPtr &,
-                                                       HttpRequest &,
-                                                       HttpResponse *);
+    using RequestHandler =
+        bool (HttpUploadHandler::*)(const TcpConnectionPtr &, HttpRequest &,
+                                    std::shared_ptr<HttpResponse> &);
 
     // 路由模式结构
     struct RoutePattern {
@@ -89,6 +90,15 @@ class HttpUploadHandler {
     // 执行SQL查询
     bool executeQuery(const std::string &query);
 
+    // 执行SQL并获取自增ID
+    bool executeInsertQuery(const std::string &query, uint64_t &lastInsertId) {
+        if (!executeQuery(query)) {
+            return false;
+        }
+        lastInsertId = mysql_insert_id(mysql);
+        return true;
+    }
+
     // 执行SQL查询并获取结果
     MYSQL_RES *executeQueryWithResult(const std::string &query);
 
@@ -99,19 +109,52 @@ class HttpUploadHandler {
                       const std::string &dbName = "file_manager",
                       unsigned int dbPort = 3307);
 
+    ~HttpUploadHandler();
+
     // 加载文件名映射
     void loadFilenameMapping();
 
     void initRoutes();
 
   private:
+    void addRoute(const std::string &path, HttpRequest::Method method,
+                  RequestHandler handler);
+
+    std::string generateSessionId();
+
+    std::string sha256(const std::string &input);
+
+    std::string escapeRegex(const std::string &str);
+
+    void saveSession(const std::string &sessionId, int userId,
+                     const std::string &username);
+
+    void saveFilenameMapping();
+
+    void saveFilenameMappingInternal();
+
+    void loadFilenameMappingInternal();
+
+    void addFilenameMapping(const std::string &serverFilename,
+                            const std::string &originalFilename);
+
+    bool handleFavicon(const TcpConnectionPtr &conn, HttpRequest &req,
+                       std::shared_ptr<HttpResponse> &resp);
+
+    bool handleRegister(const TcpConnectionPtr &conn, HttpRequest &req,
+                        std::shared_ptr<HttpResponse> &resp);
+
+    bool handleLogin(const TcpConnectionPtr &conn, HttpRequest &req,
+                     std::shared_ptr<HttpResponse> &resp);
+
     bool handleFileUpload(const TcpConnectionPtr &conn, HttpRequest &req,
-                          HttpResponse *resp);
+                          std::shared_ptr<HttpResponse> &resp);
 
     bool validateSession(const std::string &sessionId, int &userId,
                          std::string &username);
 
-    static void sendError(HttpResponse *resp, const std::string &message,
+    static void sendError(const std::shared_ptr<HttpResponse> &resp,
+                          const std::string &message,
                           HttpResponse::HttpStatusCode code,
                           const TcpConnectionPtr &conn);
 

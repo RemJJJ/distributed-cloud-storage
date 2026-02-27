@@ -1,7 +1,5 @@
 #include "LocalFileStorage.h"
 #include "../../third_party/muduo/base/Logging.h"
-#include <filesystem>
-namespace fs = std::filesystem;
 
 // LocalFileStorage::LocalFileStorage(const std::string &filename)
 //     : filename_(filename), total_bytes_(0) {

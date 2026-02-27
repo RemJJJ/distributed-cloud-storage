@@ -13,10 +13,10 @@ namespace fileserver {
 namespace net {
 namespace detail {
 bool defaultHttpCallback(const TcpConnectionPtr &, const HttpRequest &,
-                         HttpResponse *resp) {
-    resp->setStatusCode(HttpResponse::k404NotFound);
-    resp->setStatusMessage("Not Found");
-    resp->setCloseConnection(true);
+                         std::shared_ptr<HttpResponse> response) {
+    response->setStatusCode(HttpResponse::k404NotFound);
+    response->setStatusMessage("Not Found");
+    response->setCloseConnection(true);
     return true;
 }
 } // namespace detail
@@ -67,8 +67,8 @@ void HttpServer::onMessage(const TcpConnectionPtr &conn, Buffer *buf,
                 // 检查body数据大小
                 size_t bufSize = req.body().size();
                 if (bufSize >= 1024 * 1024) {
-                    HttpResponse response(false);
-                    bool syncProcessed = httpCallback_(conn, req, &response);
+                    auto response = std::make_shared<HttpResponse>(false);
+                    bool syncProcessed = httpCallback_(conn, req, response);
                     if (!syncProcessed) {
                         // 异步处理，不重置context
                         LOG_INFO << "Async upload chunk processing";
@@ -96,17 +96,17 @@ bool HttpServer::onRequest(const TcpConnectionPtr &conn, HttpRequest &req) {
     bool close =
         connection == "close" || (req.getVersion() == HttpRequest::kHttp10 &&
                                   connection != "Keep-Alive");
-    HttpResponse response(close);
+    auto response = std::make_shared<HttpResponse>(close);
 
     // 调用用户的回调函数处理请求
-    bool syncProcessed = httpCallback_(conn, req, &response);
+    bool syncProcessed = httpCallback_(conn, req, response);
 
     // 如果是同步处理完成，或者不是异步响应，直接发送相应
-    if (syncProcessed) {
+    if (syncProcessed || !response->isAsync()) {
         Buffer buf;
-        response.appendToBuffer(&buf);
+        response->appendToBuffer(&buf);
         conn->send(&buf);
-        if (response.closeConnection()) {
+        if (response->closeConnection()) {
             conn->shutdown();
         }
         LOG_INFO << "Sync request completed";

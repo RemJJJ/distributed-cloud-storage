@@ -336,7 +336,7 @@ class HttpUploadHandler {
     }
 
     bool onRequest(const TcpConnectionPtr &conn, HttpRequest &req,
-                   HttpResponse *resp) {
+                   std::shared_ptr<HttpResponse> &resp) {
         std::string path = req.path();
         LOG_INFO << "Headers: " << req.methodString() << " " << path;
         LOG_INFO << "Content-Type: " << req.getHeader("Content-Type");
@@ -2535,7 +2535,8 @@ int main() {
 
     // 设置HTTP回调
     server.setHttpCallback([handler](const TcpConnectionPtr &conn,
-                                     HttpRequest &req, HttpResponse *resp) {
+                                     HttpRequest &req,
+                                     std::shared_ptr<HttpResponse> &resp) {
         return handler->onRequest(conn, req, resp);
     });
 

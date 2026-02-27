@@ -11,8 +11,9 @@ namespace fileserver {
 namespace net {
 class HttpServer {
   public:
-    using HttpCallback = std::function<bool(const TcpConnectionPtr &,
-                                            HttpRequest &, HttpResponse *)>;
+    using HttpCallback =
+        std::function<bool(const TcpConnectionPtr &, HttpRequest &,
+                           std::shared_ptr<HttpResponse> &)>;
 
     HttpServer(EventLoop *loop, const InetAddress &listenAddr,
                const std::string &name);
