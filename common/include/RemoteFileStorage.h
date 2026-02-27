@@ -49,4 +49,5 @@ class RemoteFileStorage
     fn::Buffer sendBuffer_;
     fn::TcpConnectionPtr conn_;
     uintmax_t totalBytes_;
+    bool closeRequested_ = false; // 是否已请求关闭
 };

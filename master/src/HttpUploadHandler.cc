@@ -39,7 +39,141 @@ HttpUploadHandler::~HttpUploadHandler() {
     closeDatabase();
 }
 
-void HttpUploadHandler::initRoutes() {}
+void HttpUploadHandler::onConnection(const TcpConnectionPtr &conn) {
+    if (conn->connected()) {
+        LOG_INFO << "New connection from " << conn->peerAddress().toIpPort();
+        // 为每一个新连接创建一个HttpContext
+        conn->setContext(std::make_shared<HttpContext>());
+    } else {
+        LOG_INFO << "Connection closed from " << conn->peerAddress().toIpPort();
+        // 清理上下文
+        if (auto context =
+                std::static_pointer_cast<HttpContext>(conn->getContext())) {
+            if (auto uploadContext = context->getContext<FileUploadContext>()) {
+                LOG_INFO << "Cleaning up upload context for file: "
+                         << uploadContext->getFilename();
+            }
+        }
+        conn->setContext(std::shared_ptr<void>());
+    }
+}
+
+bool HttpUploadHandler::onRequest(const TcpConnectionPtr &conn,
+                                  HttpRequest &req,
+                                  std::shared_ptr<HttpResponse> &resp) {
+    std::string path = req.path();
+    LOG_INFO << "Headers: " << req.methodString() << " " << path;
+    LOG_INFO << "Content-Type: " << req.getHeader("Content-Type");
+    LOG_INFO << "Body size: " << req.body().size();
+
+    try {
+        // 查找匹配路由
+        for (const auto &route : routes_) {
+            if (route.method != req.method()) {
+                LOG_INFO << "Method mismatch: expected " << route.method
+                         << ", got " << req.method();
+                continue;
+            }
+
+            std::smatch matches;
+            if (std::regex_match(path, matches, route.pattern)) {
+                LOG_INFO << "Found matching route: " << path;
+                // 提取路径参数
+                std::unordered_map<std::string, std::string> params;
+                for (size_t i = 0;
+                     i < route.params.size() && i + 1 < matches.size(); i++) {
+                    params[route.params[i]] = matches[i + 1];
+                }
+
+                // 将路径参数存储到请求对象中
+                req.setPathParams(params);
+
+                // 调用处理函数
+                return (this->*(route.handler))(conn, req, resp);
+            }
+        }
+
+        // 未找到匹配路由，返回404
+        LOG_WARN << "No matching route found for " << path;
+        return handleNotFound(conn, resp);
+    } catch (const std::exception &e) {
+        LOG_ERROR << "Error processing request: " << e.what();
+        sendError(resp, "Internal Server Error",
+                  HttpResponse::k500InternalServerError, conn);
+        return true;
+    }
+}
+
+bool HttpUploadHandler::initDatabase() {
+    mysql = mysql_init(NULL);
+    if (!mysql) {
+        LOG_ERROR << "MySQL初始化失败";
+        return false;
+    }
+
+    if (!mysql_real_connect(mysql, dbHost.c_str(), dbUser.c_str(),
+                            dbPassword.c_str(), dbName.c_str(), dbPort, NULL,
+                            0)) {
+        LOG_ERROR << "MySQL连接失败: " << mysql_error(mysql);
+        mysql_close(mysql);
+        mysql = NULL;
+        return false;
+    }
+
+    // 设置字符集为utf8
+    if (mysql_set_character_set(mysql, "utf8") != 0) {
+        LOG_ERROR << "设置字符集失败：" << mysql_error(mysql);
+        return false;
+    }
+
+    LOG_INFO << "数据库连接成功";
+    return true;
+}
+
+void HttpUploadHandler::closeDatabase() {
+    if (mysql) {
+        mysql_close(mysql);
+        mysql = NULL;
+    }
+}
+
+bool HttpUploadHandler::executeQuery(const std::string &query) {
+    if (!mysql) {
+        LOG_ERROR << "数据库未连接";
+        return false;
+    }
+
+    if (mysql_query(mysql, query.c_str()) != 0) {
+        LOG_ERROR << "执行查询失败：" << mysql_error(mysql);
+        return false;
+    }
+    return true;
+}
+
+MYSQL_RES *HttpUploadHandler::executeQueryWithResult(const std::string &query) {
+    if (!executeQuery(query)) {
+        return NULL;
+    }
+    return mysql_store_result(mysql);
+}
+
+void HttpUploadHandler::initRoutes() {
+    // 不需要会话验证的路由
+    addRoute("/favicon.ico", HttpRequest::kGet,
+             &HttpUploadHandler::handleFavicon);
+    addRoute("/register", HttpRequest::kPost,
+             &HttpUploadHandler::handleRegister);
+    addRoute("/login", HttpRequest::kPost, &HttpUploadHandler::handleLogin);
+    addRoute("/", HttpRequest::kGet, &HttpUploadHandler::handleIndex);
+    addRoute("/index.html", HttpRequest::kGet, &HttpUploadHandler::handleIndex);
+    addRoute("/register.html", HttpRequest::kGet,
+             &HttpUploadHandler::handleIndex);
+
+    // 需要会话验证的路由
+    addRoute("/upload", HttpRequest::kPost,
+             &HttpUploadHandler::handleFileUpload);
+    addRoute("/files", HttpRequest::kGet, &HttpUploadHandler::handleListFiles);
+}
 
 void HttpUploadHandler::addRoute(const std::string &path,
                                  HttpRequest::Method method,
@@ -163,6 +297,18 @@ void HttpUploadHandler::saveFilenameMappingInternal() {
     }
 }
 
+void HttpUploadHandler::loadFilenameMappingInternal() {
+    try {
+        if (fs::exists(mappingFile_)) {
+            std::ifstream file(mappingFile_);
+            filenameMapping_ =
+                json::parse(file).get<std::map<std::string, std::string>>();
+        }
+    } catch (const std::exception &e) {
+        LOG_ERROR << "Failed to load filename mapping: " << e.what();
+    }
+}
+
 // 外部接口，带锁保护
 void HttpUploadHandler::addFilenameMapping(
     const std::string &serverFilename, const std::string &originalFilename) {
@@ -172,57 +318,348 @@ void HttpUploadHandler::addFilenameMapping(
     saveFilenameMappingInternal();
 }
 
-bool HttpUploadHandler::initDatabase() {
-    mysql = mysql_init(NULL);
+void HttpUploadHandler::sendError(const std::shared_ptr<HttpResponse> &resp,
+                                  const std::string &message,
+                                  HttpResponse::HttpStatusCode code,
+                                  const TcpConnectionPtr &conn) {
+    json response = {{"code", static_cast<int>(code)}, {"message", message}};
+    resp->setStatusCode(code);
+    resp->setStatusMessage(message);
+    resp->setContentType("application/json");
+    resp->addHeader("Connection", "close");
+    resp->setBody(response.dump());
+
+    if (conn) {
+        conn->setWriteCompleteCallback(
+            [conn](const TcpConnectionPtr &connection) {
+                connection->shutdown();
+                return true;
+            });
+    }
+}
+
+// url解码函数
+std::string HttpUploadHandler::urlDecode(const std::string &encoded) {
+    std::string result;
+    char ch;
+    size_t i;
+    int ii;
+    size_t len = encoded.length();
+
+    for (i = 0; i < len; i++) {
+        if (encoded[i] != '%') {
+            if (encoded[i] == '+') {
+                result += ' ';
+            } else {
+                result += encoded[i];
+            }
+        } else {
+            sscanf(encoded.substr(i + 1, 2).c_str(), "%x", &ii);
+            ch = static_cast<char>(ii);
+            result += ch;
+            i = i + 2;
+        }
+    }
+    return result;
+}
+
+std::string
+HttpUploadHandler::generateUniqueFilename(const std::string &prefix) {
+    auto now = std::chrono::system_clock::now();
+    auto timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(
+                         now.time_since_epoch())
+                         .count();
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_int_distribution<> dis(1000, 9999);
+
+    return prefix + "_" + std::to_string(timestamp) + "_" +
+           std::to_string(dis(gen));
+}
+
+std::string HttpUploadHandler::getFileType(const std::string &filename) {
+    size_t dotPos = filename.find_last_of('.');
+    if (dotPos != std::string::npos && dotPos < filename.length() - 1) {
+        std::string extension = filename.substr(dotPos + 1);
+        std::transform(extension.begin(), extension.end(), extension.begin(),
+                       ::tolower);
+
+        // 根据扩展名判断文件类型
+        if (extension == "jpg" || extension == "jpeg" || extension == "png" ||
+            extension == "gif") {
+            return "image";
+        } else if (extension == "mp4" || extension == "avi" ||
+                   extension == "mov" || extension == "wmv") {
+            return "video";
+        } else if (extension == "pdf") {
+            return "pdf";
+        } else if (extension == "doc" || extension == "docx") {
+            return "word";
+        } else if (extension == "xls" || extension == "xlsx") {
+            return "excel";
+        } else if (extension == "ppt" || extension == "pptx") {
+            return "powerpoint";
+        } else if (extension == "txt" || extension == "csv") {
+            return "text";
+        } else {
+            return "other";
+        }
+    }
+    return "unknown";
+}
+
+// 转义SQL字符串
+std::string HttpUploadHandler::escapeString(const std::string &str) {
     if (!mysql) {
-        LOG_ERROR << "MySQL初始化失败";
-        return false;
+        return str;
     }
 
-    if (!mysql_real_connect(mysql, dbHost.c_str(), dbUser.c_str(),
-                            dbPassword.c_str(), dbName.c_str(), dbPort, NULL,
-                            0)) {
-        LOG_ERROR << "MySQL连接失败: " << mysql_error(mysql);
-        mysql_close(mysql);
-        mysql = NULL;
-        return false;
+    char *escaped = new char[str.length() * 2 + 1];
+    mysql_real_escape_string(mysql, escaped, str.c_str(), str.length());
+    std::string result(escaped);
+    delete[] escaped;
+
+    return result;
+}
+
+bool HttpUploadHandler::handleIndex(const TcpConnectionPtr &conn,
+                                    HttpRequest &req,
+                                    std::shared_ptr<HttpResponse> &resp) {
+    // 1. 设置基础响应头
+    resp->setStatusCode(HttpResponse::k200Ok);
+    resp->setStatusMessage("OK");
+    resp->setContentType("text/html; charset=utf-8");
+
+    // 2. 获取请求路径
+    std::string path = req.path();
+    std::string filePath;
+    LOG_INFO << "Request path = " << path;
+
+    // 3. 核心逻辑：通过可执行文件路径定位项目根目录（彻底抛弃__FILE__）
+    char exePath[1024] = {0};
+    ssize_t len = readlink("/proc/self/exe", exePath, sizeof(exePath) - 1);
+    if (len == -1) {
+        // 读取可执行文件路径失败，降级使用相对路径（master/src → 项目根）
+        LOG_WARN << "Failed to get executable path: " << strerror(errno)
+                 << ", use fallback relative path";
+        filePath = "../../web/html/index.html";
+    } else {
+        // 解析可执行文件完整路径，回退到项目根目录
+        std::string exeFullPath(exePath, len);
+        LOG_DEBUG << "Executable full path = " << exeFullPath;
+
+        // 步骤1：截取可执行文件所在目录（master/src）
+        std::string::size_type pos = exeFullPath.find_last_of("/");
+        if (pos == std::string::npos) {
+            LOG_ERROR << "Invalid executable path: " << exeFullPath;
+            filePath = "../../web/html/index.html";
+        } else {
+            std::string srcDir = exeFullPath.substr(0, pos); // master/src
+
+            // 步骤2：回退到master目录
+            pos = srcDir.find_last_of("/");
+            if (pos == std::string::npos) {
+                LOG_ERROR << "Failed to find master directory from: " << srcDir;
+                filePath = "../web/html/index.html";
+            } else {
+                std::string masterDir = srcDir.substr(0, pos); // master
+
+                // 步骤3：回退到项目根目录（distributed-fm）
+                pos = masterDir.find_last_of("/");
+                if (pos == std::string::npos) {
+                    LOG_ERROR << "Failed to find project root from: "
+                              << masterDir;
+                    filePath = "./web/html/index.html";
+                } else {
+                    std::string projectRoot =
+                        masterDir.substr(0, pos); // distributed-fm
+                    LOG_INFO << "Project root directory = " << projectRoot;
+
+                    // 步骤4：拼接目标HTML文件路径
+                    if (path == "/register.html") {
+                        filePath = projectRoot + "/web/html/register.html";
+                    } else if (path == "/share.html" ||
+                               path.find("/share/") == 0) {
+                        filePath = projectRoot + "/web/html/share.html";
+                    } else {
+                        filePath = projectRoot + "/web/html/index.html";
+                    }
+                }
+            }
+        }
     }
 
-    // 设置字符集为utf8
-    if (mysql_set_character_set(mysql, "utf8") != 0) {
-        LOG_ERROR << "设置字符集失败：" << mysql_error(mysql);
-        return false;
+    // 从文件中读取HTML内容
+    std::ifstream file(filePath);
+    if (!file.is_open()) {
+        LOG_ERROR << "Failed to open " << filePath;
+        sendError(resp, "Failed to open " + filePath,
+                  HttpResponse::k500InternalServerError, conn);
+        return true;
     }
 
-    LOG_INFO << "数据库连接成功";
+    std::string html((std::istreambuf_iterator<char>(file)),
+                     std::istreambuf_iterator<char>());
+    file.close();
+
+    resp->addHeader("Connection", "close");
+    resp->setBody(html);
+
+    conn->setWriteCompleteCallback([](const TcpConnectionPtr &connection) {
+        connection->shutdown();
+        return true;
+    });
     return true;
 }
 
-void HttpUploadHandler::closeDatabase() {
-    if (mysql) {
-        mysql_close(mysql);
-        mysql = NULL;
-    }
-}
+bool HttpUploadHandler::handleListFiles(const TcpConnectionPtr &conn,
+                                        HttpRequest &req,
+                                        std::shared_ptr<HttpResponse> &resp) {
+    // 验证会话
+    std::string sessionId = req.getHeader("X-Session-ID");
+    int userId;
+    std::string usernameFromSession;
 
-bool HttpUploadHandler::executeQuery(const std::string &query) {
-    if (!mysql) {
-        LOG_ERROR << "数据库未连接";
-        return false;
+    if (!validateSession(sessionId, userId, usernameFromSession)) {
+        sendError(resp, "未登录或会话已过期", HttpResponse::k401Unauthorized,
+                  conn);
+        return true;
     }
 
-    if (mysql_query(mysql, query.c_str()) != 0) {
-        LOG_ERROR << "执行查询失败：" << mysql_error(mysql);
-        return false;
+    // 获取文件列表类型，默认只显示自己的文件
+    std::string listType = req.getQuery("type", "my");
+
+    std::string query;
+    if (listType == "my") {
+        // 获取自己的文件select
+        query = "SELECT f.id, f.filename, f.original_filename, f.file_size, "
+                "f.file_type, "
+                "f.created_at, 1 as is_owner FROM files f WHERE f.user_id = " +
+                std::to_string(userId);
+    } else if (listType == "shared") {
+        // 获取分享给自己的文件
+        query = "SELECT f.id, f.filename, f.original_filename, "
+                "f.file_size, f.file_type, "
+                "f.created_at, 0 as is_owner FROM files f "
+                "JOIN file_shares fs ON f.id = fs.file_id "
+                "WHERE (fs.shared_with_id = " +
+                std::to_string(userId) +
+                " OR fs.share_type = 'public') "
+                "AND f.user_id != " +
+                std::to_string(userId);
+    } else if (listType == "all") {
+        // 获取所有文件(包括自己和分享的)
+        query = "SELECT f.id, f.filename, f.original_filename, "
+                "f.file_size, f.file_type, "
+                "f.created_at, CASE WHEN f.user_id = " +
+                std::to_string(userId) +
+                " THEN 1 ELSE 0 END as is_owner "
+                "FROM files f "
+                "LEFT JOIN file_shares fs ON f.id = fs.file_id "
+                "WHERE f.user_id = " +
+                std::to_string(userId) +
+                " OR "
+                "fs.shared_with_id = " +
+                std::to_string(userId) + " OR fs.share_type = 'public'";
     }
+    LOG_INFO << "query = " << query;
+    MYSQL_RES *result = executeQueryWithResult(query);
+
+    json response;
+    response["code"] = 0;
+    response["message"] = "Success";
+    json files = json::array();
+
+    if (result) {
+        MYSQL_ROW row;
+        while ((row = mysql_fetch_row(result))) {
+            int fileId = std::stoi(row[0]);
+            std::string filename = row[1];
+            std::string originalFilename = row[2];
+            uintmax_t fileSize = std::stoull(row[3]);
+            std::string fileType = row[4];
+            std::string createdAt = row[5];
+            bool isOwner = (std::stoi(row[6]) == 1);
+
+            // 如果是文件所有者，获取分享信息
+            json shareInfo = nullptr;
+            if (isOwner) {
+                std::string shareQuery =
+                    "SELECT share_type, shared_with_id, share_code, "
+                    "expire_time, extract_code FROM file_shares "
+                    "WHERE file_id = " +
+                    std::to_string(fileId);
+                MYSQL_RES *shareResult = executeQueryWithResult(shareQuery);
+
+                if (shareResult && mysql_num_rows(shareResult) > 0) {
+                    MYSQL_ROW shareRow = mysql_fetch_row(shareResult);
+                    std::string shareType = shareRow[0];
+
+                    shareInfo = {{"type", shareType},
+                                 {"shareCode", shareRow[2] ? shareRow[2] : ""}};
+
+                    if (shareType == "protected" && shareRow[4]) {
+                        shareInfo["extractCode"] = shareRow[4];
+                    }
+
+                    if (shareType == "user" && shareRow[1]) {
+                        int sharedWithId = std::stoi(shareRow[1]);
+                        // 获取共享用户的用户名
+                        std::string userQuery =
+                            "SELECT username FROM users WHERE id = " +
+                            std::to_string(sharedWithId);
+                        MYSQL_RES *userResult =
+                            executeQueryWithResult(userQuery);
+                        if (userResult && mysql_num_rows(userResult) > 0) {
+                            MYSQL_ROW userRow = mysql_fetch_row(userResult);
+                            shareInfo["sharedWithUsername"] = userRow[0];
+                            shareInfo["sharedWithId"] = sharedWithId;
+                        }
+                        if (userResult) {
+                            mysql_free_result(userResult);
+                        }
+                    }
+
+                    if (shareRow[3]) {
+                        shareInfo["expireTime"] = shareRow[3];
+                    }
+                }
+                if (shareResult) {
+                    mysql_free_result(shareResult);
+                }
+            }
+
+            json fileInfo = {{"id", fileId},
+                             {"name", filename},
+                             {"originalName", originalFilename},
+                             {"size", fileSize},
+                             {"type", fileType},
+                             {"createdAt", createdAt},
+                             {"isOwner", isOwner}};
+
+            if (shareInfo != nullptr) {
+                fileInfo["shareInfo"] = shareInfo;
+            }
+
+            files.push_back(fileInfo);
+        }
+        response["files"] = files;
+    }
+
+    resp->setStatusCode(HttpResponse::k200Ok);
+    resp->setStatusMessage("OK");
+    resp->setContentType("application/json");
+    resp->addHeader("Connection", "close");
+    resp->setBody(response.dump());
+
+    // 设置写完成回调以关闭连接
+    conn->setWriteCompleteCallback([](const TcpConnectionPtr &connection) {
+        LOG_INFO << "List files complete, closing connection";
+        connection->shutdown();
+        return true;
+    });
+
     return true;
-}
-
-MYSQL_RES *HttpUploadHandler::executeQueryWithResult(const std::string &query) {
-    if (!executeQuery(query)) {
-        return NULL;
-    }
-    return mysql_store_result(mysql);
 }
 
 bool HttpUploadHandler::handleFileUpload(const TcpConnectionPtr &conn,
@@ -847,6 +1284,21 @@ bool HttpUploadHandler::handleFavicon(
     }
 
     conn->setWriteCompleteCallback([](const TcpConnectionPtr &connection) {
+        connection->shutdown();
+        return true;
+    });
+    return true;
+}
+
+bool HttpUploadHandler::handleNotFound(const TcpConnectionPtr &conn,
+                                       std::shared_ptr<HttpResponse> &resp) {
+    json response = {{"code", 404}, {"message", "Not Found"}};
+    resp->setStatusCode(HttpResponse::k404NotFound);
+    resp->setContentType("application/json");
+    resp->addHeader("Connection", "close");
+    resp->setBody(response.dump());
+
+    conn->setWriteCompleteCallback([conn](const TcpConnectionPtr &connection) {
         connection->shutdown();
         return true;
     });

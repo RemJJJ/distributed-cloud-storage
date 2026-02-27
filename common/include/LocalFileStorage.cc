@@ -47,6 +47,9 @@ LocalFileStorage::~LocalFileStorage() {
     }
 }
 
+void LocalFileStorage::setCloseCmdSentCallback(
+    const std::function<void(bool success)> &cb) {}
+
 bool LocalFileStorage::open(const std::string &filename) {
     // 先关闭已打开的文件
     if (file_.is_open()) {

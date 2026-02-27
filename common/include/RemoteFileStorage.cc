@@ -19,6 +19,23 @@ void RemoteFileStorage::onConnection(const fn::TcpConnectionPtr &conn) {
             sendBuffer_.retrieveAll();
         }
 
+        // 3. 如果连接建立前已请求 close，现在补发 CLOSE 命令
+        if (closeRequested_) {
+            LOG_INFO << "连接建立后补发 CLOSE 命令";
+            auto self = shared_from_this();
+            conn_->setWriteCompleteCallback(nullptr);
+            conn_->setWriteCompleteCallback(
+                [self](const fn::TcpConnectionPtr &conn) {
+                    if (self->closeCmdSentCallback_) {
+                        self->closeCmdSentCallback_(true);
+                    }
+                    conn->shutdown();
+                    conn->setWriteCompleteCallback(nullptr);
+                });
+            conn_->send("CLOSE\r\n");
+            closeRequested_ = false; // 重置标记
+        }
+
         std::weak_ptr<RemoteFileStorage> weakThis = shared_from_this();
         conn_->setCloseCallback([weakThis](const fn::TcpConnectionPtr &conn) {
             LOG_DEBUG << "TcpConnection closed";
@@ -126,21 +143,15 @@ bool RemoteFileStorage::close() {
         conn_->send(closeCmd);
         LOG_INFO << "Send CLOSE cmd and shutdown connection to " << ip_ << ":"
                  << port_;
-    } else if (sendBuffer_.readableBytes() > 0) { // 未连接但有缓存，清空缓存
-        sendBuffer_.retrieveAll();
-        LOG_WARN << "Connection not established, clear sendBuffer";
-        // 新增：触发回调，标记失败
-        if (closeCmdSentCallback_) {
-            closeCmdSentCallback_(false);
-        }
     } else {
-        if (closeCmdSentCallback_) {
-            closeCmdSentCallback_(false);
-        }
+        // 未连接，标记需要 close，等连接建立后补发
+        closeRequested_ = true;
+        LOG_WARN << "连接未建立，标记需要发送 CLOSE,等连接建立后补发";
+        // 这里不触发失败回调，等连接建立后处理
     }
 
-    // 重置状态
-    filename_.clear();
+    // 重置状态（保留 filename_，连接建立后需要用）
+    // filename_.clear(); // 注释掉，连接建立后需要 filename_ 发 OPEN 命令
     return true;
 }
 

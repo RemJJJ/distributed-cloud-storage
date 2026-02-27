@@ -116,6 +116,11 @@ class HttpUploadHandler
 
     void initRoutes();
 
+    void onConnection(const TcpConnectionPtr &conn);
+
+    bool onRequest(const TcpConnectionPtr &conn, HttpRequest &req,
+                   std::shared_ptr<HttpResponse> &resp);
+
   private:
     void addRoute(const std::string &path, HttpRequest::Method method,
                   RequestHandler handler);
@@ -138,18 +143,6 @@ class HttpUploadHandler
     void addFilenameMapping(const std::string &serverFilename,
                             const std::string &originalFilename);
 
-    bool handleFavicon(const TcpConnectionPtr &conn, HttpRequest &req,
-                       std::shared_ptr<HttpResponse> &resp);
-
-    bool handleRegister(const TcpConnectionPtr &conn, HttpRequest &req,
-                        std::shared_ptr<HttpResponse> &resp);
-
-    bool handleLogin(const TcpConnectionPtr &conn, HttpRequest &req,
-                     std::shared_ptr<HttpResponse> &resp);
-
-    bool handleFileUpload(const TcpConnectionPtr &conn, HttpRequest &req,
-                          std::shared_ptr<HttpResponse> &resp);
-
     bool validateSession(const std::string &sessionId, int &userId,
                          std::string &username);
 
@@ -165,4 +158,25 @@ class HttpUploadHandler
     std::string getFileType(const std::string &filename);
 
     std::string escapeString(const std::string &str);
+
+    bool handleFavicon(const TcpConnectionPtr &conn, HttpRequest &req,
+                       std::shared_ptr<HttpResponse> &resp);
+
+    bool handleIndex(const TcpConnectionPtr &conn, HttpRequest &req,
+                     std::shared_ptr<HttpResponse> &resp);
+
+    bool handleListFiles(const TcpConnectionPtr &conn, HttpRequest &req,
+                         std::shared_ptr<HttpResponse> &resp);
+
+    bool handleRegister(const TcpConnectionPtr &conn, HttpRequest &req,
+                        std::shared_ptr<HttpResponse> &resp);
+
+    bool handleLogin(const TcpConnectionPtr &conn, HttpRequest &req,
+                     std::shared_ptr<HttpResponse> &resp);
+
+    bool handleFileUpload(const TcpConnectionPtr &conn, HttpRequest &req,
+                          std::shared_ptr<HttpResponse> &resp);
+
+    bool handleNotFound(const TcpConnectionPtr &conn,
+                        std::shared_ptr<HttpResponse> &resp);
 };
