@@ -12,9 +12,6 @@ HttpUploadHandler::HttpUploadHandler(int numThreads, const std::string &dbHost,
       dbName(dbName), dbPort(dbPort) {
     threadPool_.start(numThreads);
 
-    // 初始化节点管理器
-    nodeManager_ = std::make_shared<NodeManager>();
-
     // 创建上传目录
     if (!fs::exists(uploadDir_)) {
         fs::create_directory(uploadDir_);
@@ -89,7 +86,7 @@ bool HttpUploadHandler::onRequest(const TcpConnectionPtr &conn,
                 req.setPathParams(params);
 
                 // 调用处理函数
-                return (this->*(route.handler))(conn, req, resp);
+                return route.handler(conn, req, resp);
             }
         }
 
@@ -160,19 +157,67 @@ MYSQL_RES *HttpUploadHandler::executeQueryWithResult(const std::string &query) {
 void HttpUploadHandler::initRoutes() {
     // 不需要会话验证的路由
     addRoute("/favicon.ico", HttpRequest::kGet,
-             &HttpUploadHandler::handleFavicon);
+             [this](const TcpConnectionPtr &conn, HttpRequest &req,
+                    std::shared_ptr<HttpResponse> &resp) {
+                 return handleFavicon(conn, req, resp);
+             });
     addRoute("/register", HttpRequest::kPost,
-             &HttpUploadHandler::handleRegister);
-    addRoute("/login", HttpRequest::kPost, &HttpUploadHandler::handleLogin);
-    addRoute("/", HttpRequest::kGet, &HttpUploadHandler::handleIndex);
-    addRoute("/index.html", HttpRequest::kGet, &HttpUploadHandler::handleIndex);
+             [this](const TcpConnectionPtr &conn, HttpRequest &req,
+                    std::shared_ptr<HttpResponse> &resp) {
+                 return handleRegister(conn, req, resp);
+             });
+    addRoute("/upload", HttpRequest::kPost,
+             [this](const TcpConnectionPtr &conn, HttpRequest &req,
+                    std::shared_ptr<HttpResponse> &resp) {
+                 return handleFileUpload(conn, req, resp);
+             });
+    addRoute("/", HttpRequest::kGet,
+             [this](const TcpConnectionPtr &conn, HttpRequest &req,
+                    std::shared_ptr<HttpResponse> &resp) {
+                 return handleIndex(conn, req, resp);
+             });
+    addRoute("/index.html", HttpRequest::kGet,
+             [this](const TcpConnectionPtr &conn, HttpRequest &req,
+                    std::shared_ptr<HttpResponse> &resp) {
+                 return handleIndex(conn, req, resp);
+             });
     addRoute("/register.html", HttpRequest::kGet,
-             &HttpUploadHandler::handleIndex);
+             [this](const TcpConnectionPtr &conn, HttpRequest &req,
+                    std::shared_ptr<HttpResponse> &resp) {
+                 return handleIndex(conn, req, resp);
+             });
+    addRoute("/login", HttpRequest::kPost,
+             [this](const TcpConnectionPtr &conn, HttpRequest &req,
+                    std::shared_ptr<HttpResponse> &resp) {
+                 return handleLogin(conn, req, resp);
+             });
 
     // 需要会话验证的路由
     addRoute("/upload", HttpRequest::kPost,
-             &HttpUploadHandler::handleFileUpload);
-    addRoute("/files", HttpRequest::kGet, &HttpUploadHandler::handleListFiles);
+             [this](const TcpConnectionPtr &conn, HttpRequest &req,
+                    std::shared_ptr<HttpResponse> &resp) {
+                 return handleFileUpload(conn, req, resp);
+             });
+    addRoute("/files", HttpRequest::kGet,
+             [this](const TcpConnectionPtr &conn, HttpRequest &req,
+                    std::shared_ptr<HttpResponse> &resp) {
+                 return handleListFiles(conn, req, resp);
+             });
+
+    // 节点路由
+    auto regHandler = std::make_shared<RegisterNodeHandler>();
+    addRoute("/registerNode", HttpRequest::kPost,
+             [regHandler](const TcpConnectionPtr &conn, HttpRequest &req,
+                          std::shared_ptr<HttpResponse> &resp) {
+                 return regHandler->handleRegisterNode(conn, req, resp);
+             });
+
+    auto hbHandler = std::make_shared<HeartbeatHandler>();
+    addRoute("/heartbeat", HttpRequest::kPost,
+             [hbHandler](const TcpConnectionPtr &conn, HttpRequest &req,
+                         std::shared_ptr<HttpResponse> &resp) {
+                 return hbHandler->handleHeartbeat(conn, req, resp);
+             });
 }
 
 void HttpUploadHandler::addRoute(const std::string &path,
@@ -439,7 +484,8 @@ bool HttpUploadHandler::handleIndex(const TcpConnectionPtr &conn,
     char exePath[1024] = {0};
     ssize_t len = readlink("/proc/self/exe", exePath, sizeof(exePath) - 1);
     if (len == -1) {
-        // 读取可执行文件路径失败，降级使用相对路径（master/src → 项目根）
+        // 读取可执行文件路径失败，降级使用相对路径（master/src →
+        // 项目根）
         LOG_WARN << "Failed to get executable path: " << strerror(errno)
                  << ", use fallback relative path";
         filePath = "../../web/html/index.html";
@@ -532,9 +578,11 @@ bool HttpUploadHandler::handleListFiles(const TcpConnectionPtr &conn,
     std::string query;
     if (listType == "my") {
         // 获取自己的文件select
-        query = "SELECT f.id, f.filename, f.original_filename, f.file_size, "
+        query = "SELECT f.id, f.filename, f.original_filename, "
+                "f.file_size, "
                 "f.file_type, "
-                "f.created_at, 1 as is_owner FROM files f WHERE f.user_id = " +
+                "f.created_at, 1 as is_owner FROM files f WHERE "
+                "f.user_id = " +
                 std::to_string(userId);
     } else if (listType == "shared") {
         // 获取分享给自己的文件
@@ -666,6 +714,9 @@ bool HttpUploadHandler::handleFileUpload(const TcpConnectionPtr &conn,
                                          HttpRequest &req,
                                          std::shared_ptr<HttpResponse> &resp) {
     auto respPtr = resp;
+    // 设置为异步响应
+    respPtr->setAsync(true);
+
     // 验证会话
     std::string sessionId = req.getHeader("X-Session-ID");
     int userId;
@@ -674,6 +725,8 @@ bool HttpUploadHandler::handleFileUpload(const TcpConnectionPtr &conn,
     if (!validateSession(sessionId, userId, usernameFromSession)) {
         sendError(respPtr, "未登录或会话已过期", HttpResponse::k401Unauthorized,
                   conn);
+        // 设置回同步
+        respPtr->setAsync(false);
         return true;
     }
 
@@ -684,6 +737,8 @@ bool HttpUploadHandler::handleFileUpload(const TcpConnectionPtr &conn,
         LOG_ERROR << "HttpContext is null";
         sendError(respPtr, "Internal Server Error",
                   HttpResponse::k500InternalServerError, conn);
+        // 设置回同步
+        respPtr->setAsync(false);
         return true;
     }
     LOG_INFO << "body.size() = " << req.body().size();
@@ -697,6 +752,8 @@ bool HttpUploadHandler::handleFileUpload(const TcpConnectionPtr &conn,
         if (contentType.empty()) {
             sendError(respPtr, "Content-Type header is missing",
                       HttpResponse::k400BadRequest, conn);
+            // 设置回同步
+            respPtr->setAsync(false);
             return true;
         }
 
@@ -705,6 +762,8 @@ bool HttpUploadHandler::handleFileUpload(const TcpConnectionPtr &conn,
         if (!std::regex_search(contentType, matches, boundaryRegex)) {
             sendError(respPtr, "Invalid Content-Type",
                       HttpResponse::k400BadRequest, conn);
+            // 设置回同步
+            respPtr->setAsync(false);
             return true;
         }
         std::string boundary = "--" + matches[1].str();
@@ -726,6 +785,8 @@ bool HttpUploadHandler::handleFileUpload(const TcpConnectionPtr &conn,
                 if (body.empty()) {
                     sendError(respPtr, "Request body is empty",
                               HttpResponse::k400BadRequest, conn);
+                    // 设置回同步
+                    respPtr->setAsync(false);
                     return true;
                 }
 
@@ -745,12 +806,18 @@ bool HttpUploadHandler::handleFileUpload(const TcpConnectionPtr &conn,
             std::string filename = generateUniqueFilename("upload");
             std::string filepath = uploadDir_ + "/" + filename;
 
-            // 简化版， 先写死一个DataNode地址，后续可扩展为集群中选择
-            std::string datanodeIp = "127.0.0.1";
-            uint16_t datanodePort = 8888;
+            // 选择一个DataNode
+            auto datanode = NodeManager::instance().getAliveNode();
+            if (!datanode) {
+                sendError(respPtr, "No available DataNode",
+                          HttpResponse::k500InternalServerError, conn);
+                // 设置回同步
+                respPtr->setAsync(false);
+                return true;
+            }
 
             auto remoteStorage = std::make_shared<RemoteFileStorage>(
-                datanodeIp, datanodePort, conn->getLoop());
+                datanode->addr_, conn->getLoop());
 
             // 设置关闭回调： DataNode连接关闭，上传完成
             remoteStorage->setCloseCallback([conn]() {
@@ -766,37 +833,6 @@ bool HttpUploadHandler::handleFileUpload(const TcpConnectionPtr &conn,
                     }
                 }
             });
-
-            // 设置连接超时回调
-            std::weak_ptr<RemoteFileStorage> weakStorage = remoteStorage;
-            std::weak_ptr<HttpContext> weakHttpContext = httpContext;
-            conn->getLoop()->runAfter(
-                5, [weakStorage, conn, respPtr, weakHttpContext]() {
-                    // 5秒后检查是否连接成功
-                    // 先锁定weak_ptr, 确保对象活着
-                    auto storage = weakStorage.lock();
-                    if (!storage) {
-                        LOG_WARN << "RemoteFileStorage already destorayed";
-                        return;
-                    }
-                    if (!storage->isConnected()) {
-                        LOG_ERROR << "Connect to DataNode timeout";
-                        // 标记上传失败
-                        auto httpContext = weakHttpContext.lock();
-                        if (!httpContext)
-                            return;
-                        auto uploadContext =
-                            httpContext->getContext<FileUploadContext>();
-                        if (uploadContext) {
-                            uploadContext->setState(
-                                FileUploadContext::State::kFailed);
-                        }
-                        // 发送错误相应
-                        sendError(respPtr, "Connect to DataNode timeout",
-                                  HttpResponse::k500InternalServerError, conn);
-                    }
-                });
-
             // 开始发起连接请求，remotestorage已经设置了连接回调，发送open命令并补发保存在buffer中的数据
             // 然后才调用用户设置的connection回调。
             remoteStorage->open(filepath);
@@ -851,6 +887,8 @@ bool HttpUploadHandler::handleFileUpload(const TcpConnectionPtr &conn,
             LOG_ERROR << "Failed to create upload context: " << e.what();
             sendError(respPtr, "Failed to create file",
                       HttpResponse::k500InternalServerError, conn);
+            // 设置回同步
+            respPtr->setAsync(false);
             return true;
         }
     } else {
@@ -943,6 +981,7 @@ bool HttpUploadHandler::handleFileUpload(const TcpConnectionPtr &conn,
                               "Upload failed (remote node connect timeout)",
                               HttpResponse::k500InternalServerError, conn);
                     httpContext->setContext(nullptr);
+                    respPtr->setAsync(false);
                     break;
                 }
                 default: {
@@ -956,6 +995,8 @@ bool HttpUploadHandler::handleFileUpload(const TcpConnectionPtr &conn,
             LOG_ERROR << "Error processing data chunk: " << e.what();
             sendError(respPtr, "Failed to process data",
                       HttpResponse::k500InternalServerError, conn);
+            // 设置回同步
+            respPtr->setAsync(false);
             return true;
         }
     }
@@ -969,12 +1010,14 @@ bool HttpUploadHandler::handleFileUpload(const TcpConnectionPtr &conn,
         return false;
     }
 
-    auto remoteStorage = uploadContext->getRemoteStorage();
+    auto remoteStorage = uploadContext->getStorage<RemoteFileStorage>();
     if (!remoteStorage) {
         LOG_ERROR << "RemoteFileStorage is null";
         sendError(respPtr, "RemoteFileStorage is null",
                   HttpResponse::k500InternalServerError, conn);
         httpContext->setContext(nullptr); // 清理上下文，释放资源
+                                          // 设置回同步
+        respPtr->setAsync(false);
         return true;
     }
 
@@ -1003,6 +1046,12 @@ bool HttpUploadHandler::handleFileUpload(const TcpConnectionPtr &conn,
             sendError(respPtr, "上传失败:数据节点连接异常",
                       HttpResponse::k500InternalServerError, conn);
             httpContext->setContext(nullptr);
+            // 异步手动发送
+            if (conn->connected()) {
+                Buffer buf;
+                respPtr->appendToBuffer(&buf);
+                conn->send(&buf);
+            }
             return;
         }
 
@@ -1080,17 +1129,19 @@ bool HttpUploadHandler::handleFileUpload(const TcpConnectionPtr &conn,
             respPtr->addHeader("Connection", "close");
             respPtr->setBody(response.dump());
 
+            LOG_DEBUG << "准备发送上传成功响应";
+
             if (conn->connected()) {
                 // 异步响应必须手动send
                 Buffer buf;
                 respPtr->appendToBuffer(&buf);
-                conn->send(&buf);
-
                 conn->setWriteCompleteCallback(
                     [](const fn::TcpConnectionPtr &conn) {
                         if (conn->connected())
                             conn->shutdown();
                     });
+                conn->send(&buf);
+                LOG_DEBUG << "已发送上传成功响应";
             }
         } else {
             sendError(respPtr, "上传失败：数据库操作异常",

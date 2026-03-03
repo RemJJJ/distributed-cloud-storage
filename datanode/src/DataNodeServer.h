@@ -1,3 +1,4 @@
+#pragma once
 #include "../../common/include/FileStorage.h"
 #include "../../third_party/muduo/net/EventLoop.h"
 #include "../../third_party/muduo/net/TcpServer.h"

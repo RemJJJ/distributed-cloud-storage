@@ -8,7 +8,9 @@
 #include "../../third_party/muduo/net/HttpResponse.h"
 #include "../../third_party/muduo/net/HttpServer.h"
 #include "FileUploadContext.h"
+#include "HeartbeatHandler.h"
 #include "NodeManager.h"
+#include "RegisterNodeHandler.h"
 #include <chrono>
 #include <cstdint>
 #include <exception>
@@ -42,12 +44,11 @@ namespace fs = std::filesystem;
 class HttpUploadHandler
     : public std::enable_shared_from_this<HttpUploadHandler> {
   private:
-    ThreadPool threadPool_;                    // 线程池
-    std::shared_ptr<NodeManager> nodeManager_; // 节点管理器
-    std::string uploadDir_;                    // 上传目录
-    std::string mappingFile_;                  // 文件名映射文件
-    std::atomic<int> activeRequests_;          // 活跃请求计数
-    std::mutex mappingMutex_;                  // 保护文件名映射的互斥锁
+    ThreadPool threadPool_;           // 线程池
+    std::string uploadDir_;           // 上传目录
+    std::string mappingFile_;         // 文件名映射文件
+    std::atomic<int> activeRequests_; // 活跃请求计数
+    std::mutex mappingMutex_;         // 保护文件名映射的互斥锁
     std::map<std::string, std::string>
         filenameMapping_; // <服务器文件名, 原始文件名>
 
@@ -59,10 +60,10 @@ class HttpUploadHandler
     std::string dbName;
     unsigned int dbPort;
 
-    // 定义处理函数类型
+    // 【新】改成 std::function，兼容一切可调用对象
     using RequestHandler =
-        bool (HttpUploadHandler::*)(const TcpConnectionPtr &, HttpRequest &,
-                                    std::shared_ptr<HttpResponse> &);
+        std::function<bool(const TcpConnectionPtr &, HttpRequest &,
+                           std::shared_ptr<HttpResponse> &)>;
 
     // 路由模式结构
     struct RoutePattern {

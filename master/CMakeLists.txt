@@ -1,11 +1,10 @@
-# 收集 master 模块的所有源文件
-file(GLOB MASTER_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp")
+file(GLOB_RECURSE MASTER_SOURCES "src/*.cc")
+add_executable(master ${MASTER_SOURCES})
 
-# 创建可执行文件
-add_executable(master_node ${MASTER_SOURCES})
+target_include_directories(master PRIVATE 
+    ${CMAKE_SOURCE_DIR}/common/include
+    ${MUDUO_INCLUDE_DIRS}
+    ${MYSQL_INCLUDE_DIRS}
+)
 
-# 链接公共库（如果有）
-target_link_libraries(master_node PRIVATE common_lib)
-
-# 如果需要链接 muduo 库，添加：
-# target_link_libraries(master_node PRIVATE muduo_base muduo_net)
+target_link_libraries(master PRIVATE common ${MUDUO_LIBRARIES} ${MYSQL_LIBRARIES})

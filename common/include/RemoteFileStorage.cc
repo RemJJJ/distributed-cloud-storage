@@ -8,14 +8,13 @@
 
 void RemoteFileStorage::onConnection(const fn::TcpConnectionPtr &conn) {
     if (conn->connected()) {
-        LOG_INFO << "Connected to DataNode: " << ip_ << ":" << port_;
-        conn_ = conn;
+        LOG_INFO << "Connected to DataNode: " << addr_.toIpPort();
         std::string openCmd = "OPEN " + filename_ + "\r\n";
-        conn_->send(openCmd);
+        conn->send(openCmd);
 
         // 补发连接建立前缓存的数据
         if (sendBuffer_.readableBytes() > 0) {
-            conn_->send(sendBuffer_.peek(), sendBuffer_.readableBytes());
+            conn->send(sendBuffer_.peek(), sendBuffer_.readableBytes());
             sendBuffer_.retrieveAll();
         }
 
@@ -23,8 +22,8 @@ void RemoteFileStorage::onConnection(const fn::TcpConnectionPtr &conn) {
         if (closeRequested_) {
             LOG_INFO << "连接建立后补发 CLOSE 命令";
             auto self = shared_from_this();
-            conn_->setWriteCompleteCallback(nullptr);
-            conn_->setWriteCompleteCallback(
+            conn->setWriteCompleteCallback(nullptr);
+            conn->setWriteCompleteCallback(
                 [self](const fn::TcpConnectionPtr &conn) {
                     if (self->closeCmdSentCallback_) {
                         self->closeCmdSentCallback_(true);
@@ -32,12 +31,12 @@ void RemoteFileStorage::onConnection(const fn::TcpConnectionPtr &conn) {
                     conn->shutdown();
                     conn->setWriteCompleteCallback(nullptr);
                 });
-            conn_->send("CLOSE\r\n");
+            conn->send("CLOSE\r\n");
             closeRequested_ = false; // 重置标记
         }
 
         std::weak_ptr<RemoteFileStorage> weakThis = shared_from_this();
-        conn_->setCloseCallback([weakThis](const fn::TcpConnectionPtr &conn) {
+        conn->setCloseCallback([weakThis](const fn::TcpConnectionPtr &conn) {
             LOG_DEBUG << "TcpConnection closed";
             auto self = weakThis.lock();
             if (!self)
@@ -52,7 +51,7 @@ void RemoteFileStorage::onConnection(const fn::TcpConnectionPtr &conn) {
             connectionCallback_();
         }
     } else {
-        LOG_INFO << "Disconnected from DataNode: " << ip_ << ":" << port_;
+        LOG_INFO << "Disconnected from DataNode: " << addr_.toIpPort();
     }
 }
 
@@ -64,11 +63,10 @@ void RemoteFileStorage::setCloseCallback(const std::function<void()> &cb) {
     closeCallback_ = cb;
 }
 
-RemoteFileStorage::RemoteFileStorage(const std::string &ip, int port,
+RemoteFileStorage::RemoteFileStorage(const fn::InetAddress &addr,
                                      fn::EventLoop *loop)
-    : ip_(ip), port_(port),
-      client_(std::make_unique<fn::TcpClient>(
-          loop, fn::InetAddress(ip_, port_), "RemoteFileStorage - TcpClient")) {
+    : addr_(addr), client_(std::make_unique<fn::TcpClient>(
+                       loop, addr, "RemoteFileStorage - TcpClient")) {
     client_->setConnectionCallback(std::bind(&RemoteFileStorage::onConnection,
                                              this, std::placeholders::_1));
 }
@@ -76,7 +74,8 @@ RemoteFileStorage::RemoteFileStorage(const std::string &ip, int port,
 RemoteFileStorage::~RemoteFileStorage() {}
 
 bool RemoteFileStorage::isConnected() const {
-    return conn_ != nullptr && conn_->connected();
+    auto conn = client_->connection();
+    return (conn && conn->connected());
 }
 
 bool RemoteFileStorage::open(const std::string &filename) {
@@ -105,14 +104,15 @@ bool RemoteFileStorage::write(const char *data, size_t len) {
     fn::Buffer buf;
     buf.append(header);
     buf.append(data, len);
-    if (!conn_) {
+    auto conn = client_->connection();
+    if (!conn || !conn->connected()) {
         sendBuffer_.append(header);
         sendBuffer_.append(data, len);
         LOG_DEBUG << "Cache data to sendBuffer, size: "
                   << sendBuffer_.readableBytes();
     } else {
         // 合并，防止粘包
-        conn_->send(buf.peek(), buf.readableBytes());
+        conn->send(buf.peek(), buf.readableBytes());
         buf.retrieveAll();
         LOG_DEBUG << "Send data to DataNode, len: " << len;
     }
@@ -122,15 +122,15 @@ bool RemoteFileStorage::write(const char *data, size_t len) {
 
 bool RemoteFileStorage::close() {
     std::string closeCmd = "CLOSE\r\n";
-
+    auto conn = client_->connection();
     // 已连接，发送CLOSE
-    if (conn_ && conn_->connected()) {
+    if (conn && conn->connected()) {
         auto self = shared_from_this();
         // 确保写完后再shutdown
-        conn_->setWriteCompleteCallback(
+        conn->setWriteCompleteCallback(
             [self](const fn::TcpConnectionPtr &conn) {
                 LOG_INFO << "CLOSE cmd sent, shutdown connection to "
-                         << self->ip_ << ":" << self->port_;
+                         << self->addr_.toIpPort();
                 conn->shutdown(); // 发送完成后再关闭
                 // 清空写完成回调，避免重复触发
                 conn->setWriteCompleteCallback(nullptr);
@@ -140,9 +140,9 @@ bool RemoteFileStorage::close() {
                     self->closeCmdSentCallback_(true);
                 }
             });
-        conn_->send(closeCmd);
-        LOG_INFO << "Send CLOSE cmd and shutdown connection to " << ip_ << ":"
-                 << port_;
+        conn->send(closeCmd);
+        LOG_INFO << "Send CLOSE cmd and shutdown connection to "
+                 << addr_.toIpPort();
     } else {
         // 未连接，标记需要 close，等连接建立后补发
         closeRequested_ = true;
@@ -158,7 +158,8 @@ bool RemoteFileStorage::close() {
 uintmax_t RemoteFileStorage::totalBytes() const { return totalBytes_; }
 
 bool RemoteFileStorage::isOpen() const {
-    return !filename_.empty() && conn_ != nullptr && conn_->connected();
+    auto conn = client_->connection();
+    return !filename_.empty() && conn != nullptr && conn->connected();
 }
 
 const std::string &RemoteFileStorage::filename() const { return filename_; }

@@ -1,9 +1,11 @@
 #pragma once
 #include "../../common/include/FileStorage.h"
 #include "../../common/include/LocalFileStorage.h"
+#include "../../third_party/muduo/base/Logging.h"
 #include <memory>
 #include <string>
-class FileUploadContext {
+class FileUploadContext
+    : public std::enable_shared_from_this<FileUploadContext> {
   public:
     enum class State {
         kExpectHeaders,  // 等待头部
@@ -31,11 +33,25 @@ class FileUploadContext {
     const std::string &getFilename() const { return storage_->filename(); }
 
     /// @brief 获取文件存储
-    std::shared_ptr<FileStorage> getRemoteStorage() const { return storage_; }
+    template <typename T> std::shared_ptr<T> getStorage() const {
+        return std::static_pointer_cast<T>(storage_);
+    }
+
+    /// @brief 设置切换状态回调
+    void setStateChangeCallback(const std::function<void(State newState)> &cb) {
+        stateChangeCallback_ = cb;
+    }
 
     void setBoundary(const std::string &boundary) { boundary_ = boundary; }
     State getState() const { return state_; }
-    void setState(State state) { state_ = state; }
+    void setState(State state) {
+        State oldState = state_;
+        state_ = state;
+        if (stateChangeCallback_ && oldState != state_) {
+            LOG_DEBUG << "执行状态更新回调, 状态：" << static_cast<int>(state_);
+            stateChangeCallback_(state);
+        }
+    }
     const std::string &getBoundary() const { return boundary_; }
 
     /// @brief 标记上传完成
@@ -49,5 +65,6 @@ class FileUploadContext {
     uintmax_t totalBytes_;                 // 已写入字节
     State state_;                          // 当前状态
     std::string boundary_;                 // multipart边界
-    bool uploadComplete_;                  // 是否上传完成
+    std::function<void(State newState)> stateChangeCallback_; // 状态切换回调
+    bool uploadComplete_;                                     // 是否上传完成
 };

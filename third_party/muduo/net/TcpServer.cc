@@ -60,7 +60,7 @@ void TcpServer::start() {
     }
 }
 
-// 有一个新的客户端丽娜姐，acceptor会执行这个回调操作
+// 有一个新的客户端连接，acceptor会执行这个回调操作
 void TcpServer::newConnection(int sockfd, const InetAddress &peerAddr) {
     // 轮询算法， 选择一个subLoop， 来管理channel
     EventLoop *ioLoop = threadPool_->getNextLoop();

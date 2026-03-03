@@ -20,7 +20,7 @@ int main() {
         return handler->onRequest(conn, req, resp);
     });
 
-    server.setThreadNum(0);
+    server.setThreadNum(4);
     server.start();
     std::cout << "HTTP upload server is running on port 8000..." << std::endl;
     std::cout << "Please visit http://localhost:8000" << std::endl;

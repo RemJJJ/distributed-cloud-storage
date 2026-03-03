@@ -112,7 +112,7 @@ DataNodeServer::DataNodeServer(fn::EventLoop *loop,
                                const fileserver::net::InetAddress &listenAddr,
                                const std::string &name)
     : server_(loop, listenAddr, name) {
-    server_.setThreadNum(1);
+    server_.setThreadNum(4);
     server_.setConnectionCallback(
         std::bind(&DataNodeServer::onConnection, this, std::placeholders::_1));
     server_.setMessageCallback(

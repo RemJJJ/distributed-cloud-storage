@@ -1,13 +1,44 @@
 #pragma once
-#include "StorageNode.h"
+#include "../../third_party/muduo/base/Timestamp.h"
+#include "../../third_party/muduo/net/InetAddress.h"
+#include "DataNodeInfo.h"
+#include <functional>
+#include <memory>
+#include <mutex>
+#include <unordered_map>
 #include <vector>
+
+namespace std {
+template <> struct hash<fn::InetAddress> {
+    size_t operator()(const fn::InetAddress &addr) const {
+        return std::hash<std::string>()(addr.toIpPort());
+    }
+};
+} // namespace std
 
 class NodeManager {
   public:
-    NodeManager();
+    // 单列模式：全局只有一个实例
+    static NodeManager &instance() {
+        static NodeManager instance_;
+        return instance_;
+    }
 
-    StorageNode selectNode(); // 现在固定返回本地
+    ///@brief 注册节点
+    void registerNode(const fn::InetAddress &addr);
+
+    ///@brief 更新心跳
+    void updateHeartbeat(const fn::InetAddress &addr);
+
+    ///@brief 获取一个活着的节点
+    std::shared_ptr<DataNodeInfo> getAliveNode();
 
   private:
-    std::vector<StorageNode> nodes_;
+    NodeManager() = default;
+    ~NodeManager() = default;
+    NodeManager(const NodeManager &) = delete;
+    NodeManager &operator=(const NodeManager &) = delete;
+
+    std::mutex mutex_; // 保护nodes_的锁
+    std::unordered_map<std::string, std::shared_ptr<DataNodeInfo>> nodes_;
 };

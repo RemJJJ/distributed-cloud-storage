@@ -1,0 +1,18 @@
+{
+    "master":{
+        "port":8080,
+        "num_threads": 4
+    },
+    "mysql":{
+        "host": "localhost",
+        "port": 3307,
+        "user": "RemJJJ",
+        "password": "mysql@RemJJJ",
+        "database": "file_manager"
+    },
+    "datanode":{
+        "master_host": "localhost",
+        "master_port": 8080,
+        "local_port": 9000
+    }
+}

@@ -1,3 +1,4 @@
+#pragma once
 #include "../../common/include/FileStorage.h"
 #include "../../third_party/muduo/net/Buffer.h"
 #include "../../third_party/muduo/net/EventLoop.h"
@@ -10,7 +11,7 @@ class RemoteFileStorage
     : public FileStorage,
       public std::enable_shared_from_this<RemoteFileStorage> {
   public:
-    RemoteFileStorage(const std::string &ip, int port, fn::EventLoop *loop);
+    RemoteFileStorage(const fn::InetAddress &addr, fn::EventLoop *loop);
 
     ~RemoteFileStorage() override;
 
@@ -42,12 +43,10 @@ class RemoteFileStorage
     std::function<void()> connectionCallback_;
     std::function<void()> closeCallback_;
     std::function<void(bool success)> closeCmdSentCallback_;
-    std::string ip_;
-    int port_;
+    fn::InetAddress addr_;
     std::string filename_;
     std::unique_ptr<fn::TcpClient> client_;
     fn::Buffer sendBuffer_;
-    fn::TcpConnectionPtr conn_;
     uintmax_t totalBytes_;
     bool closeRequested_ = false; // 是否已请求关闭
 };
