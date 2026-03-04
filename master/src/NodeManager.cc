@@ -1,5 +1,6 @@
 #include "NodeManager.h"
 #include "../../third_party/muduo/base/Logging.h"
+#include "../../third_party/muduo/net/TimerId.h"
 
 void NodeManager::registerNode(const fn::InetAddress &addr) {
     {
@@ -36,4 +37,20 @@ std::shared_ptr<DataNodeInfo> NodeManager::getAliveNode() {
     LOG_WARN << "No alive node found";
 
     return nullptr;
+}
+
+void NodeManager::startTimeoutChecker(fn::EventLoop *loop, double interval) {
+    loop->runEvery(interval, std::bind(&NodeManager::checkTimeoutNodes, this));
+}
+
+void NodeManager::checkTimeoutNodes() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (auto &pair : nodes_) {
+        auto node = pair.second;
+        if (node->isAlive_ && node->isTimeout()) {
+            node->isAlive_ = false;
+            LOG_WARN << "DataNode 超时离线: " << pair.first << " (最后心跳: "
+                     << node->lastHeartbeat_.toFormattedString() << ")";
+        }
+    }
 }

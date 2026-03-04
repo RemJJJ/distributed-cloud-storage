@@ -21,6 +21,7 @@ int main() {
     });
 
     server.setThreadNum(4);
+    NodeManager::instance().startTimeoutChecker(&loop, 5.0);
     server.start();
     std::cout << "HTTP upload server is running on port 8000..." << std::endl;
     std::cout << "Please visit http://localhost:8000" << std::endl;

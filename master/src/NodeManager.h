@@ -1,5 +1,6 @@
 #pragma once
 #include "../../third_party/muduo/base/Timestamp.h"
+#include "../../third_party/muduo/net/EventLoop.h"
 #include "../../third_party/muduo/net/InetAddress.h"
 #include "DataNodeInfo.h"
 #include <functional>
@@ -30,10 +31,16 @@ class NodeManager {
     ///@brief 更新心跳
     void updateHeartbeat(const fn::InetAddress &addr);
 
+    ///@brief 启动超时检测定时器
+    // 【新增】启动超时检测定时器（在 Master 启动时调用一次）
+    void startTimeoutChecker(fn::EventLoop *loop, double interval = 5.0);
+
     ///@brief 获取一个活着的节点
     std::shared_ptr<DataNodeInfo> getAliveNode();
 
   private:
+    ///@brief 扫描超时节点
+    void checkTimeoutNodes();
     NodeManager() = default;
     ~NodeManager() = default;
     NodeManager(const NodeManager &) = delete;

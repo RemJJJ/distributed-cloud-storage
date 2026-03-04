@@ -844,20 +844,20 @@ bool HttpUploadHandler::handleFileUpload(const TcpConnectionPtr &conn,
                     // ========== 核心修改：精确去掉结束边界前的 \r\n ==========
                     size_t validEnd = endPos;
                     // 1. 先去掉结束边界前的 \n
-                    if (validEnd > 0 && body[validEnd - 1] == '\n') {
+                    if (validEnd > pos && body[validEnd - 1] == '\n') {
                         validEnd--;
                         LOG_INFO << "去掉末尾的 \\n,validEnd = " << validEnd;
                     }
                     // 2. 再去掉结束边界前的 \r
-                    if (validEnd > 0 && body[validEnd - 1] == '\r') {
+                    if (validEnd > pos && body[validEnd - 1] == '\r') {
                         validEnd--;
                         LOG_INFO << "去掉末尾的 \\r,validEnd = " << validEnd;
                     }
 
                     // 3. 只写入 0 到 validEnd 之间的有效数据
-                    if (validEnd > 0) {
-                        size_t writeLen = validEnd;
-                        uploadContext->writeData(body.data(), writeLen);
+                    if (validEnd > pos) {
+                        size_t writeLen = validEnd - pos;
+                        uploadContext->writeData(body.data() + pos, writeLen);
                         LOG_INFO << "Wrote " << writeLen
                                  << " bytes (有效数据), total: "
                                  << uploadContext->getTotalBytes();
