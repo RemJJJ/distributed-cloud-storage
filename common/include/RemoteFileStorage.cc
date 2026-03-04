@@ -35,32 +35,9 @@ void RemoteFileStorage::onConnection(const fn::TcpConnectionPtr &conn) {
             closeRequested_ = false; // 重置标记
         }
 
-        std::weak_ptr<RemoteFileStorage> weakThis = shared_from_this();
-        conn->setCloseCallback([weakThis](const fn::TcpConnectionPtr &conn) {
-            LOG_DEBUG << "TcpConnection closed";
-            auto self = weakThis.lock();
-            if (!self)
-                return;
-            if (self->closeCallback_) {
-                self->closeCallback_();
-            }
-        });
-
-        // 触发连接成功回调
-        if (connectionCallback_) {
-            connectionCallback_();
-        }
     } else {
         LOG_INFO << "Disconnected from DataNode: " << addr_.toIpPort();
     }
-}
-
-void RemoteFileStorage::setConnectionCallback(const std::function<void()> &cb) {
-    connectionCallback_ = cb;
-}
-
-void RemoteFileStorage::setCloseCallback(const std::function<void()> &cb) {
-    closeCallback_ = cb;
 }
 
 RemoteFileStorage::RemoteFileStorage(const fn::InetAddress &addr,

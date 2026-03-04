@@ -819,20 +819,6 @@ bool HttpUploadHandler::handleFileUpload(const TcpConnectionPtr &conn,
             auto remoteStorage = std::make_shared<RemoteFileStorage>(
                 datanode->addr_, conn->getLoop());
 
-            // 设置关闭回调： DataNode连接关闭，上传完成
-            remoteStorage->setCloseCallback([conn]() {
-                auto httpContext =
-                    std::static_pointer_cast<HttpContext>(conn->getContext());
-                if (httpContext) {
-                    auto uploadCtx =
-                        httpContext->getContext<FileUploadContext>();
-                    if (uploadCtx) {
-                        uploadCtx->setUploadComplete(true);
-                        LOG_INFO << "Remote upload complete, for file:"
-                                 << uploadCtx->getFilename();
-                    }
-                }
-            });
             // 开始发起连接请求，remotestorage已经设置了连接回调，发送open命令并补发保存在buffer中的数据
             // 然后才调用用户设置的connection回调。
             remoteStorage->open(filepath);
@@ -855,12 +841,25 @@ bool HttpUploadHandler::handleFileUpload(const TcpConnectionPtr &conn,
                 size_t endPos = body.find(endBoundary);
                 if (endPos != std::string::npos) {
                     LOG_INFO << "Found end boundary";
-                    // 先写入边界之前的内容
-                    if (endPos > 0) {
-                        uploadContext->writeData(body.data() + pos,
-                                                 endPos - pos);
-                        LOG_INFO << "Wrote " << endPos - pos
-                                 << " bytes before end boundary, total: "
+                    // ========== 核心修改：精确去掉结束边界前的 \r\n ==========
+                    size_t validEnd = endPos;
+                    // 1. 先去掉结束边界前的 \n
+                    if (validEnd > 0 && body[validEnd - 1] == '\n') {
+                        validEnd--;
+                        LOG_INFO << "去掉末尾的 \\n,validEnd = " << validEnd;
+                    }
+                    // 2. 再去掉结束边界前的 \r
+                    if (validEnd > 0 && body[validEnd - 1] == '\r') {
+                        validEnd--;
+                        LOG_INFO << "去掉末尾的 \\r,validEnd = " << validEnd;
+                    }
+
+                    // 3. 只写入 0 到 validEnd 之间的有效数据
+                    if (validEnd > 0) {
+                        size_t writeLen = validEnd;
+                        uploadContext->writeData(body.data(), writeLen);
+                        LOG_INFO << "Wrote " << writeLen
+                                 << " bytes (有效数据), total: "
                                  << uploadContext->getTotalBytes();
                     }
                     // 找到结束边界，上传完成
@@ -905,11 +904,27 @@ bool HttpUploadHandler::handleFileUpload(const TcpConnectionPtr &conn,
                         uploadContext->getBoundary() + "--";
                     size_t endPos = body.find(endBoundary);
                     if (endPos != std::string::npos) {
-                        // 在这里添加写入边界之前的内容
-                        if (endPos > 0) {
-                            uploadContext->writeData(body.data(), endPos);
-                            LOG_INFO << "Wrote " << endPos
-                                     << " bytes before end boundary, total: "
+                        // ========== 核心修改：精确去掉结束边界前的 \r\n
+                        // ==========
+                        size_t validEnd = endPos;
+                        // 1. 先去掉结束边界前的 \n
+                        if (validEnd > 0 && body[validEnd - 1] == '\n') {
+                            validEnd--;
+                            LOG_INFO << "去掉末尾的 \\n,validEnd = "
+                                     << validEnd;
+                        }
+                        // 2. 再去掉结束边界前的 \r
+                        if (validEnd > 0 && body[validEnd - 1] == '\r') {
+                            validEnd--;
+                            LOG_INFO << "去掉末尾的 \\r,validEnd = "
+                                     << validEnd;
+                        }
+                        // 3. 只写入 0 到 validEnd 之间的有效数据
+                        if (validEnd > 0) {
+                            size_t writeLen = validEnd;
+                            uploadContext->writeData(body.data(), writeLen);
+                            LOG_INFO << "Wrote " << writeLen
+                                     << " bytes (有效数据), total: "
                                      << uploadContext->getTotalBytes();
                         }
                         LOG_INFO << "Found end boundary;";
@@ -1050,6 +1065,10 @@ bool HttpUploadHandler::handleFileUpload(const TcpConnectionPtr &conn,
             if (conn->connected()) {
                 Buffer buf;
                 respPtr->appendToBuffer(&buf);
+                conn->setWriteCompleteCallback(
+                    [](const fn::TcpConnectionPtr &conn) {
+                        conn->shutdown(); // 发送完成后再关闭
+                    });
                 conn->send(&buf);
             }
             return;
@@ -1083,8 +1102,10 @@ bool HttpUploadHandler::handleFileUpload(const TcpConnectionPtr &conn,
 
                 if (self->executeInsertQuery(fileQuery, fileId)) {
                     // 插入DataNode存储信息
-                    std::string datanode_ip = "127.0.0.1";
-                    int datanode_port = 8888;
+                    auto addr = uploadContext->getStorage<RemoteFileStorage>()
+                                    ->getAddr();
+                    std::string datanode_ip = addr.toIp();
+                    uint16_t datanode_port = addr.port();
                     std::string nodeQuery =
                         "INSERT INTO file_storage (file_id, "
                         "datanode_ip, datanode_port) VALUES (" +

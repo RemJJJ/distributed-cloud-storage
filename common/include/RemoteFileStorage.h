@@ -29,9 +29,7 @@ class RemoteFileStorage
 
     const std::string &filename() const override;
 
-    void setConnectionCallback(const std::function<void()> &cb);
-
-    void setCloseCallback(const std::function<void()> &cb);
+    fn::InetAddress getAddr() const { return addr_; }
 
     void setCloseCmdSentCallback(
         const std::function<void(bool success)> &cb) override {
@@ -40,8 +38,6 @@ class RemoteFileStorage
 
   private:
     void onConnection(const fn::TcpConnectionPtr &conn);
-    std::function<void()> connectionCallback_;
-    std::function<void()> closeCallback_;
     std::function<void(bool success)> closeCmdSentCallback_;
     fn::InetAddress addr_;
     std::string filename_;
