@@ -1,48 +1,26 @@
 
 #pragma once
-#include "../../third_party/muduo/base/Logging.h"
-#include "../../third_party/muduo/base/ThreadPool.h"
-#include "../../third_party/muduo/net/EventLoop.h"
-#include "../../third_party/muduo/net/HttpContext.h"
-#include "../../third_party/muduo/net/HttpRequest.h"
-#include "../../third_party/muduo/net/HttpResponse.h"
-#include "../../third_party/muduo/net/HttpServer.h"
+#include "BaseHandler.h"
 #include "FileUploadContext.h"
 #include "HeartbeatHandler.h"
 #include "NodeManager.h"
 #include "RegisterNodeHandler.h"
-#include <chrono>
-#include <cstdint>
-#include <exception>
-#include <nlohmann/json.hpp>
-
+#include "base/ThreadPool.h"
 #include <atomic>
 #include <cstdio>
 #include <experimental/filesystem>
 #include <fstream>
-#include <functional>
-#include <iostream>
 #include <map>
-#include <memory>
 #include <mutex>
 #include <mysql/mysql.h>
 #include <random>
-#include <regex>
 #include <sstream>
 #include <stdexcept>
 #include <string>
-#include <sys/socket.h>
-#include <sys/types.h>
-#include <unistd.h>
 #include <unordered_map>
-#include <vector>
-using namespace fileserver;
-using namespace fileserver::net;
-using json = nlohmann::json;
 namespace fs = std::filesystem;
 
-class HttpUploadHandler
-    : public std::enable_shared_from_this<HttpUploadHandler> {
+class HttpUploadHandler : public BaseHandler {
   private:
     ThreadPool threadPool_;           // 线程池
     std::string uploadDir_;           // 上传目录
@@ -59,28 +37,6 @@ class HttpUploadHandler
     std::string dbPassword;
     std::string dbName;
     unsigned int dbPort;
-
-    // 【新】改成 std::function，兼容一切可调用对象
-    using RequestHandler =
-        std::function<bool(const TcpConnectionPtr &, HttpRequest &,
-                           std::shared_ptr<HttpResponse> &)>;
-
-    // 路由模式结构
-    struct RoutePattern {
-        std::regex pattern;              // 正则表达式模式
-        std::vector<std::string> params; // 路径参数名列表
-        RequestHandler handler;          // 处理函数
-        HttpRequest::Method method;      // HTTP方法
-
-        RoutePattern(const std::string &pattern_str,
-                     const std::vector<std::string> &param_names,
-                     RequestHandler h, HttpRequest::Method m)
-            : pattern(pattern_str), params(param_names), handler(h), method(m) {
-        }
-    };
-
-    // 路由表
-    std::vector<RoutePattern> routes_;
 
     // 初始化数据库连接
     bool initDatabase();
@@ -115,22 +71,16 @@ class HttpUploadHandler
     // 加载文件名映射
     void loadFilenameMapping();
 
-    void initRoutes();
+    ///@brief 初始化路由，覆盖
+    void initRoutes() override;
 
-    void onConnection(const TcpConnectionPtr &conn);
-
-    bool onRequest(const TcpConnectionPtr &conn, HttpRequest &req,
-                   std::shared_ptr<HttpResponse> &resp);
+    ///@brief 链接回调，覆盖
+    void onConnection(const TcpConnectionPtr &conn) override;
 
   private:
-    void addRoute(const std::string &path, HttpRequest::Method method,
-                  RequestHandler handler);
-
     std::string generateSessionId();
 
     std::string sha256(const std::string &input);
-
-    std::string escapeRegex(const std::string &str);
 
     void saveSession(const std::string &sessionId, int userId,
                      const std::string &username);
@@ -146,13 +96,6 @@ class HttpUploadHandler
 
     bool validateSession(const std::string &sessionId, int &userId,
                          std::string &username);
-
-    static void sendError(const std::shared_ptr<HttpResponse> &resp,
-                          const std::string &message,
-                          HttpResponse::HttpStatusCode code,
-                          const TcpConnectionPtr &conn);
-
-    std::string urlDecode(const std::string &encoded);
 
     std::string generateUniqueFilename(const std::string &prefix);
 
@@ -177,7 +120,4 @@ class HttpUploadHandler
 
     bool handleFileUpload(const TcpConnectionPtr &conn, HttpRequest &req,
                           std::shared_ptr<HttpResponse> &resp);
-
-    bool handleNotFound(const TcpConnectionPtr &conn,
-                        std::shared_ptr<HttpResponse> &resp);
 };

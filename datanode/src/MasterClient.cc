@@ -1,6 +1,9 @@
 #include "MasterClient.h"
-#include "../../third_party/muduo/base/Logging.h"
+#include "base/Logging.h"
+#include "base/Timestamp.h"
+#include <mutex>
 #include <nlohmann/json.hpp>
+#include <queue>
 
 using namespace nlohmann;
 
@@ -26,6 +29,9 @@ void MasterClient::onConnection(const fn::TcpConnectionPtr &conn) {
         conn_ = conn;
         LOG_INFO << "Connected to Master: " << masterAddr_.toIpPort();
         registerNode();
+
+        // 连接成功后，补发之前没法出去的通知
+        loop_->runInLoop([this]() { procPendingNotice(); });
     } else {
         LOG_INFO << "Disconnected from Master: " << masterAddr_.toIpPort();
         conn_.reset();
@@ -93,4 +99,68 @@ void MasterClient::post(const std::string &path, const std::string &body) {
     conn_->send(request);
     LOG_INFO << "POST request sent:" << "\nHeader: " << requestHeader
              << "\nBody: " << body;
+}
+
+// ----------线程安全的通知入口------------
+void MasterClient::notifyUploadFinish(const std::string &file_id,
+                                      const std::string &server_filename,
+                                      size_t stored_size) {
+    // 先把通知放进队列
+    {
+        std::lock_guard<std::mutex> lock(pendingMutex_);
+        pendingNotifications_.push({file_id, server_filename, stored_size});
+    }
+
+    // 切换到MasterClient绑定的EventLoop中执行
+    loop_->runInLoop([this]() { procPendingNotice(); });
+}
+
+// ------------实际执行通知的函数(在EventLoop线程中)--------------
+void MasterClient::doNotifyUploadFinish(const std::string &file_id,
+                                        const std::string &server_filename,
+                                        size_t stored_size) {
+    if (!conn_ || !conn_->connected()) {
+        LOG_WARN << "Not connected to Master, notification queued: " << file_id;
+        // 连接断开，重新放回队列（等下一次 onConnection 成功后再发）
+        std::lock_guard<std::mutex> lock(pendingMutex_);
+        pendingNotifications_.push({file_id, server_filename, stored_size});
+        return;
+    }
+
+    // 构造JSON请求体
+    json reqJson;
+    reqJson["file_id"] = file_id;
+    reqJson["node_ip"] = myAddr_.toIp();
+    reqJson["node_port"] = myAddr_.port();
+    reqJson["server_filename"] = server_filename;
+    reqJson["stored_size"] = stored_size;
+    reqJson["upload_finish_ts"] =
+        fileserver::Timestamp::now().microSecondsSinceEpoch();
+
+    // post
+    std::string path = "/notify_upload_finish";
+    std::string body = reqJson.dump();
+    post(path, body);
+
+    LOG_INFO << "Notified Master of upload finish: " << file_id;
+}
+
+// ------------------处理待发送队列---------------------
+void MasterClient::procPendingNotice() {
+    loop_->assertInLoopThread();
+
+    std::queue<PendingNotice> tempQueue;
+
+    {
+        std::lock_guard<std::mutex> lock(pendingMutex_);
+        std::swap(tempQueue, pendingNotifications_);
+    }
+
+    // 出个发送
+    while (!tempQueue.empty()) {
+        auto &notification = tempQueue.front();
+        doNotifyUploadFinish(notification.file_id, notification.server_filename,
+                             notification.stored_size);
+        tempQueue.pop();
+    }
 }

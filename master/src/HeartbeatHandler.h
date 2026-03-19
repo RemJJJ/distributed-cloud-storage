@@ -1,8 +1,8 @@
 #pragma once
-#include "../../third_party/muduo/net/HttpRequest.h"
-#include "../../third_party/muduo/net/HttpResponse.h"
-#include "../../third_party/muduo/net/TcpConnection.h"
 #include "NodeManager.h"
+#include "net/HttpRequest.h"
+#include "net/HttpResponse.h"
+#include "net/TcpConnection.h"
 
 class HeartbeatHandler {
   public:

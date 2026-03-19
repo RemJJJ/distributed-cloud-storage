@@ -1,6 +1,6 @@
 #include "DataNodeServer.h"
-#include "../../common/include/LocalFileStorage.h"
-#include "../../third_party/muduo/base/Logging.h"
+#include "LocalFileStorage.h"
+#include "base/Logging.h"
 #include <sstream>
 
 ConnectionContext::ConnectionContext(const std::string &filename,
@@ -20,9 +20,8 @@ ConnectionContext::~ConnectionContext() {
 }
 
 bool ConnectionContext::hasMoreDataToProcess() const {
-    // 如果是WAIT_DATA状态，且还有未读数据，返回true
-    return (state_ == State::WAIT_DATA && contentLength_ > 0) ||
-           (state_ == State::WAIT_COMMAND && contentLength_ == 0);
+    // 修复：只有当正在接收数据且数据没到齐时，才认为需要继续循环处理
+    return (state_ == State::WAIT_DATA && contentLength_ > 0);
 }
 
 bool ConnectionContext::parseRequest(fn::Buffer *buf,
@@ -41,6 +40,11 @@ bool ConnectionContext::parseRequest(fn::Buffer *buf,
             size_t lineLen = crlf - buf->peek();
             std::string line = buf->retrieveAsString(lineLen);
             buf->retrieve(2); // 去掉\r\n
+
+            // 显式跳过空行
+            if (line.empty()) {
+                continue;
+            }
             LOG_INFO << "Received line: " << line;
 
             // 解析命令

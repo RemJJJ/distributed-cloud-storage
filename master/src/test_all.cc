@@ -1,4 +1,5 @@
-#include "HttpUploadHandler.h"
+#include "MasterHttpHandler.h"
+#include <iostream>
 
 int main() {
     Logger::setLogLevel(Logger::DEBUG);

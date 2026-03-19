@@ -1,6 +1,6 @@
 #include "NodeManager.h"
-#include "../../third_party/muduo/base/Logging.h"
-#include "../../third_party/muduo/net/TimerId.h"
+#include "base/Logging.h"
+#include "net/TimerId.h"
 
 void NodeManager::registerNode(const fn::InetAddress &addr) {
     {

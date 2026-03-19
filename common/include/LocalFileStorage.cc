@@ -1,5 +1,5 @@
 #include "LocalFileStorage.h"
-#include "../../third_party/muduo/base/Logging.h"
+#include "base/Logging.h"
 
 // LocalFileStorage::LocalFileStorage(const std::string &filename)
 //     : filename_(filename), total_bytes_(0) {
@@ -26,12 +26,7 @@
 LocalFileStorage::LocalFileStorage() : filename_(""), total_bytes_(0) {}
 
 LocalFileStorage::LocalFileStorage(const std::string &filename)
-    : filename_(filename), total_bytes_(0) {
-    if (!open(filename)) {
-        throw std::runtime_error("Failed to init LocalFileStorage for " +
-                                 filename);
-    }
-}
+    : filename_(filename), total_bytes_(0) {}
 
 LocalFileStorage::~LocalFileStorage() {
     if (file_.is_open()) {

@@ -32,6 +32,12 @@ set(MUDUO_LIBRARIES muduo_net muduo_base pthread)
 # 将muduo库路径加入链接搜索目录
 link_directories(${MUDUO_LIBRARY_DIRS})
 
+# 将muduo和MySQL的头文件路径加入全局搜索路径
+include_directories(
+    ${MUDUO_INCLUDE_DIRS}
+    ${MYSQL_INCLUDE_DIRS}
+)
+
 #-------------------------- MySQL库配置 --------------------------
 set(MYSQL_INCLUDE_DIRS "/usr/include/mysql")
 

@@ -1,7 +1,7 @@
 #pragma once
 
-#include "../../third_party/muduo/base/Timestamp.h"
-#include "../../third_party/muduo/net/InetAddress.h"
+#include "base/Timestamp.h"
+#include "net/InetAddress.h"
 
 #include <atomic>
 #include <string>

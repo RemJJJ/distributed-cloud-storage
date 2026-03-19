@@ -2,6 +2,7 @@ build/
 uploads/
 .vscode/
 .idea/
+.cache/
 *.o
 *.a
 *.so

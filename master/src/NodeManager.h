@@ -1,8 +1,8 @@
 #pragma once
-#include "../../third_party/muduo/base/Timestamp.h"
-#include "../../third_party/muduo/net/EventLoop.h"
-#include "../../third_party/muduo/net/InetAddress.h"
 #include "DataNodeInfo.h"
+#include "base/Timestamp.h"
+#include "net/EventLoop.h"
+#include "net/InetAddress.h"
 #include <functional>
 #include <memory>
 #include <mutex>

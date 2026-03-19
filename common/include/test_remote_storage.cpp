@@ -1,6 +1,6 @@
-#include "../../third_party/muduo/base/Logging.h"
-#include "../../third_party/muduo/net/EventLoop.h"
 #include "RemoteFileStorage.h"
+#include "base/Logging.h"
+#include "net/EventLoop.h"
 #include <chrono>
 #include <fstream>
 #include <unistd.h>
@@ -22,21 +22,21 @@ int main() {
     std::string content((std::istreambuf_iterator<char>(localFile)),
                         std::istreambuf_iterator<char>());
 
-    // 设置连接完成回调
-    storage->setConnectionCallback([&storage, &loop, &content]() {
-        // 连接建立后再写数据
-        storage->write(content.c_str(), content.size());
-        LOG_INFO << "Content written";
+    // // 设置连接完成回调
+    // storage->setConnectionCallback([&storage, &loop, &content]() {
+    //     // 连接建立后再写数据
+    //     storage->write(content.c_str(), content.size());
+    //     LOG_INFO << "Content written";
 
-        // 数据发送后关闭
-        storage->close();
-    });
+    //     // 数据发送后关闭
+    //     storage->close();
+    // });
 
-    // 注册关闭回调
-    storage->setCloseCallback([&loop]() {
-        LOG_DEBUG << "Close callback triggered: Channel has been removed";
-        loop.quit();
-    });
+    // // 注册关闭回调
+    // storage->setCloseCallback([&loop]() {
+    //     LOG_DEBUG << "Close callback triggered: Channel has been removed";
+    //     loop.quit();
+    // });
 
     storage->open("uploads/JJJ.txt");
 

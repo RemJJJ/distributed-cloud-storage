@@ -1,13 +1,13 @@
 #pragma once
-#include "../../common/include/FileStorage.h"
-#include "../../common/include/LocalFileStorage.h"
-#include "../../third_party/muduo/base/Logging.h"
+#include "FileStorage.h"
+#include "LocalFileStorage.h"
+#include "base/Logging.h"
 #include <memory>
 #include <string>
 class FileUploadContext
     : public std::enable_shared_from_this<FileUploadContext> {
   public:
-    enum class State {
+    enum class State : uint8_t {
         kExpectHeaders,  // 等待头部
         kExpectContent,  // 等待内容
         kExpectBoundary, // 等待边界

@@ -1,8 +1,8 @@
 #pragma once
-#include "../../common/include/FileStorage.h"
-#include "../../third_party/muduo/net/Buffer.h"
-#include "../../third_party/muduo/net/EventLoop.h"
-#include "../../third_party/muduo/net/TcpClient.h"
+#include "FileStorage.h"
+#include "net/Buffer.h"
+#include "net/EventLoop.h"
+#include "net/TcpClient.h"
 #include <string>
 
 namespace fn = fileserver::net;
