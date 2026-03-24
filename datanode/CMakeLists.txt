@@ -11,4 +11,4 @@ target_include_directories(datanode PRIVATE
 )
 
 # 链接库：common公共库 + muduo库
-target_link_libraries(datanode PRIVATE common ${MUDUO_LIBRARIES})
+target_link_libraries(datanode PRIVATE common ${MUDUO_LIBRARIES} ${UUID_LIBRARIES} OpenSSL::SSL OpenSSL::Crypto)

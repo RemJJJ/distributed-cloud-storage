@@ -1,7 +1,9 @@
 #include "DataNode.h"
+#include "Config.h"
 #include "DataNodeHttpHandler.h"
 #include "DataNodeServer.h"
 #include "MasterClient.h"
+#include "TokenManager.h"
 #include "base/Logging.h"
 #include "net/Callbacks.h"
 #include "net/HttpRequest.h"
@@ -34,15 +36,49 @@ DataNode::DataNode(fn::EventLoop *loop, const fn::InetAddress &listenAddr,
     datanodeServer_->setThreadNum(4);
 }
 
+DataNode::~DataNode() {}
+
 void DataNode::start() {
     datanodeServer_->start();
     masterClient_->start();
     masterClient_->startHeartbeat();
-    loop_->loop();
 }
 
-int main() {
-    Logger::setLogLevel(Logger::DEBUG);
+int main(int argc, char *argv[]) {
+    std::string loggerLevel;
+    std::string configPath = "config.json";
+    if (argc > 1) {
+        loggerLevel = argv[1];
+    }
+    if (argc > 2) {
+        configPath = argv[2];
+    }
+
+    if (loggerLevel == "-D") {
+        Logger::setLogLevel(Logger::DEBUG);
+    } else {
+        Logger::setLogLevel(Logger::INFO);
+    }
+
+    try {
+        if (!Config::instance().load(configPath)) {
+            LOG_ERROR << "无法打开配置文件：" << configPath;
+            return -1;
+        }
+        LOG_INFO << "配置文件加载成功";
+    } catch (const std::exception &e) {
+        LOG_ERROR << e.what();
+        return -1;
+    }
+
+    // 初始化Token管理器
+    TokenManager::init(configPath);
+    // 验证是否初始化成功
+    if (!TokenManager::isInitialized()) {
+        LOG_FATAL << "TokenManager 初始化失败";
+        return -1;
+    }
+
     EventLoop loop;
 
     // 3. 配置地址

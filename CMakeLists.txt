@@ -16,6 +16,10 @@ add_compile_options(-Wall -Wextra -Wpedantic -g)
 # 生成compile_commands.json（给clangd用，必加！）
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# -------------------------- 配置相关 ----------------------------
+set(CONFIG_SOURCE_DIR ${CMAKE_SOURCE_DIR})
+set(CONFIG_FILE "config.json")
+
 # -------------------------- muduo库配置 --------------------------
 # 定义muduo的根目录（相对于项目根目录）
 set(MUDUO_ROOT ${CMAKE_SOURCE_DIR}/third_party/muduo)
@@ -42,6 +46,25 @@ include_directories(
 set(MYSQL_INCLUDE_DIRS "/usr/include/mysql")
 
 set(MYSQL_LIBRARIES "mysqlclient")
+
+#-------------------------- UUID库配置 ---------------------------
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(UUID REQUIRED uuid)
+
+# 将 uuid 的头文件路径加入全局包含目录
+include_directories(${UUID_INCLUDE_DIRS})
+
+set(UUID_LIBRARIES ${UUID_LIBRARIES}) 
+
+#-------------------------- JWT 库配置 ---------------------------
+set(JWT_CPP_INCLUDE_DIRS ${CMAKE_SOURCE_DIR}/third_party/jwt-cpp/include)
+
+find_package(OpenSSL REQUIRED)
+
+include_directories(
+    ${JWT_CPP_INCLUDE_DIRS}
+    ${OPENSSL_INCLUDE_DIR}
+)
 
 # 在子目录管理之前，把config.json复制到build目录
 file(COPY ${CMAKE_SOURCE_DIR}/config.json DESTINATION ${CMAKE_BINARY_DIR})

@@ -14,7 +14,7 @@ namespace fileserver {
 namespace net {
 class HttpRequest : public fileserver::copyable {
   public:
-    enum Method { kInvalid, kGet, kPost, kHead, kPut, kDelete };
+    enum Method { kInvalid, kGet, kPost, kHead, kPut, kDelete, kOptions };
     enum Version { kUnknown, kHttp10, kHttp11 };
 
     HttpRequest() : method_(kInvalid), version_(kUnknown) {}
@@ -36,6 +36,8 @@ class HttpRequest : public fileserver::copyable {
             method_ = kPut;
         } else if (m == "DELETE") {
             method_ = kDelete;
+        } else if (m == "OPTIONS") {
+            method_ = kOptions;
         } else {
             method_ = kInvalid;
         }
@@ -62,6 +64,8 @@ class HttpRequest : public fileserver::copyable {
         case kDelete:
             result = "DELETE";
             break;
+        case kOptions:
+            result = "kOptions";
         default:
             break;
         }

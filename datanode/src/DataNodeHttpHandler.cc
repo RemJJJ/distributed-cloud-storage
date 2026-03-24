@@ -1,8 +1,10 @@
 #include "DataNodeHttpHandler.h"
 #include "DataNode.h"
 #include "LocalFileStorage.h"
+#include "TokenManager.h"
 #include "base/ThreadPool.h"
 #include "net/Callbacks.h"
+#include "net/HttpRequest.h"
 #include "net/HttpResponse.h"
 #include <cstdint>
 #include <filesystem>
@@ -53,6 +55,7 @@ DataNodeHttpHandler::DataNodeHttpHandler(DataNode *datanode)
     : uploadDir_("uploads"), datanode_(datanode) {
     // 创建上传目录
     if (!fs::exists(uploadDir_)) {
+        LOG_DEBUG << "创建上传目录: " << uploadDir_;
         fs::create_directory(uploadDir_);
     }
 
@@ -62,8 +65,19 @@ DataNodeHttpHandler::DataNodeHttpHandler(DataNode *datanode)
 
 DataNodeHttpHandler::~DataNodeHttpHandler() {}
 
-/// TODO:
-void initRoutes() {}
+/// TODO: 初始化路由表
+void DataNodeHttpHandler::initRoutes() {
+    addRoute("/api/datanode/upload", HttpRequest::kOptions,
+             [this](const TcpConnectionPtr &conn, HttpRequest &req,
+                    std::shared_ptr<HttpResponse> &resp) {
+                 return handleFileUpload(conn, req, resp);
+             });
+    addRoute("/api/datanode/upload", HttpRequest::kPost,
+             [this](const TcpConnectionPtr &conn, HttpRequest &req,
+                    std::shared_ptr<HttpResponse> &resp) {
+                 return handleFileUpload(conn, req, resp);
+             });
+}
 
 void DataNodeHttpHandler::onConnection(const TcpConnectionPtr &conn) {
     if (conn->connected()) {
@@ -90,10 +104,46 @@ bool DataNodeHttpHandler::validateToken(const std::string &token) {}
 bool DataNodeHttpHandler::handleFileUpload(
     const TcpConnectionPtr &conn, HttpRequest &req,
     std::shared_ptr<HttpResponse> &resp) {
+
+    // ==========================================
+    // 1. 拦截并处理浏览器的 CORS 预检请求 (OPTIONS)
+    // ==========================================
+    if (req.method() == fn::HttpRequest::kOptions) {
+        resp->setStatusCode(fn::HttpResponse::k200Ok);
+        // 允许所有域名跨域（生产环境可以改成具体的域名如
+        // http://localhost:8000）
+        resp->addHeader("Access-Control-Allow-Origin", "*");
+        // 允许的方法
+        resp->addHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+        // 允许前端携带的自定义请求头（非常重要，少一个都不行！）
+        resp->addHeader("Access-Control-Allow-Headers",
+                        "Authorization, Content-Type, X-File-Name");
+        // 让浏览器缓存这个预检结果 24 小时，不用每次上传都发 OPTIONS
+        resp->addHeader("Access-Control-Max-Age", "86400");
+
+        // OPTIONS 请求不需要 Body，直接返回 true 结束处理
+        return true;
+    }
+
+    // ⚠️ 极其重要：即使是真正的 POST
+    // 响应，也必须带上跨域头，否则前端拿不到响应数据！
+    resp->addHeader("Access-Control-Allow-Origin", "*");
+
     // 验证Token
-    std::string token = req.getHeader("X-Upload-Token");
-    if (!validateToken(token)) {
-        sendError(resp, "验证过期", HttpResponse::k401Unauthorized, conn);
+    std::string authHeader = req.getHeader("Authorization");
+    if (authHeader.empty() || authHeader.substr(0, 7) != "Bearer ") {
+        sendError(resp, "缺少上传 Token", fn::HttpResponse::k401Unauthorized,
+                  conn);
+        return true;
+    }
+
+    uint64_t fileID = 0;
+    std::string serverFilename;
+    std::string uploadToken = authHeader.substr(7);
+    if (!TokenManager::instance().verifyUploadToken(uploadToken, fileID,
+                                                    serverFilename)) {
+        sendError(resp, "上传 Token 无效或已过期",
+                  HttpResponse::k401Unauthorized, conn);
         return true;
     }
 
@@ -130,28 +180,14 @@ bool DataNodeHttpHandler::handleFileUpload(
         LOG_INFO << "Boundary: " << boundary;
 
         try {
-            std::string serverFilename;
-            // 获取服务器文件名
-            std::string headerFilename = req.getHeader("X-File-Name");
-            if (!headerFilename.empty()) {
-                serverFilename = urlDecode(headerFilename);
-                LOG_INFO << "Got filename from X-File-Name header: "
-                         << serverFilename;
-            }
-
-            uint64_t FileID;
-            // 获取文件id
-            std::string headerFileID = req.getHeader("X-FILE-ID");
-            if (!headerFileID.empty()) {
-                FileID = stoul(urlDecode(headerFileID));
-            }
 
             // 创建存储
             auto localStorage = std::make_shared<LocalFileStorage>();
 
             // 创建上传上下文
+            std::string filePath = uploadDir_ + "/" + serverFilename;
             uploadContext = std::make_shared<FileUploadContext>(
-                FileID, serverFilename, std::move(localStorage));
+                fileID, filePath, std::move(localStorage));
 
             uploadContext->setBoundary(boundary);
             httpContext->setContext(uploadContext);
@@ -314,22 +350,23 @@ bool DataNodeHttpHandler::handleFileUpload(
     // 检查是否完成
     if (uploadContext->getState() == FileUploadContext::State::kComplete ||
         httpContext->gotAll()) {
-        // TODO:上传完成，准备响应
         auto file_id = uploadContext->getFileID();
         auto server_filename = uploadContext->getFilename();
         auto stored_size = uploadContext->getTotalBytes();
-        json respJson;
-        respJson["code"] = 0;
-        respJson["msg"] = "Upload success";
-        respJson["data"]["file_id"] = file_id;
-        respJson["data"]["server_filename"] = server_filename;
-        respJson["data"]["stored_size"] = stored_size;
+        json respJson = {{"code", 0},
+                         {"msg", "Upload success"},
+                         {"data",
+                          {{"file_id", file_id},
+                           {"server_filename", server_filename},
+                           {"stored_size", stored_size}}}};
         //   respJson["data"]["file_md5"] = uploadContext->getFileMd5();
-
+        // 优化：只 dump 一次
+        std::string bodyStr = respJson.dump();
         resp->setStatusCode(fileserver::net::HttpResponse::k200Ok);
         resp->setContentType("application/json");
         resp->addHeader("Connection", "close");
-        resp->setBody(respJson.dump());
+        resp->setBody(bodyStr);
+        resp->addHeader("Content-Length", std::to_string(bodyStr.size()));
 
         // 清理上下文
         httpContext->setContext(nullptr);

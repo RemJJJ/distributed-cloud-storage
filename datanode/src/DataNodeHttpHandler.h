@@ -18,7 +18,7 @@ namespace fs = std::filesystem;
 // 文件上传上下文
 class FileUploadContext {
   public:
-    enum class State : uint8_t {
+    enum class State : std::uint8_t {
         kExpectHeaders,  // 等待头部
         kExpectContent,  // 等待内容
         kExpectBoundary, // 等待边界
@@ -88,9 +88,9 @@ class DataNodeHttpHandler : public BaseHandler {
 
     ~DataNodeHttpHandler();
 
-    void initRoutes();
+    void initRoutes() override;
 
-    void onConnection(const TcpConnectionPtr &conn);
+    void onConnection(const TcpConnectionPtr &conn) override;
 
   private:
     ///@brief 验证Token

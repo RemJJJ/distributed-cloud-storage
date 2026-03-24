@@ -7,7 +7,7 @@
 class FileUploadContext
     : public std::enable_shared_from_this<FileUploadContext> {
   public:
-    enum class State : uint8_t {
+    enum class State : std::uint8_t {
         kExpectHeaders,  // 等待头部
         kExpectContent,  // 等待内容
         kExpectBoundary, // 等待边界

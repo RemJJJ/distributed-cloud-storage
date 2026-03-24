@@ -251,6 +251,13 @@
         const email = document.getElementById('email').value;
         const password = document.getElementById('password').value;
 
+        // 获取按钮并改变状态，防止用户重复点击
+        const btn = document.querySelector('.register-button');
+        btn.disabled = true;
+        btn.textContent = '注册中...';
+
+        console.log("1. 开始发送请求...");
+
         fetch('/register', {
             method: 'POST',
             headers: {
@@ -262,28 +269,37 @@
                 password: password
             })
         })
-        .then(response => response.json())
+        .then(response => {
+            console.log("2. 收到 HTTP 响应:", response.status);
+            return response.json();
+        })
         .then(data => {
-            if (data.code === 0) {
-                alert('注册成功！即将跳转到登录页面...');
+            console.log("3. 成功解析 JSON 数据:", data);
+            
+            // 注意：这里我把 === 改成了 ==，防止后端传过来的 0 是字符串类型导致判断失败
+            if (data.code == 0) {
+                console.log("4. 判断成功，准备执行跳转...");
+                
+                btn.textContent = '注册成功！即将跳转...';
+                btn.style.backgroundColor = '#4CAF50'; // 变绿
+                
                 setTimeout(() => {
-                    window.location.href = 'index.html';
+                    console.log("5. 正在执行 window.location.href");
+                    // 加上 / 确保跳转到根目录下的 index.html
+                    window.location.href = '/index.html'; 
                 }, 1500);
             } else {
-                // 显示具体的错误信息
-                if (data.message.includes('用户名')) {
-                    document.getElementById('username-error').textContent = data.message;
-                    document.getElementById('username-error').style.display = 'block';
-                } else if (data.message.includes('邮箱')) {
-                    document.getElementById('email-error').textContent = data.message;
-                    document.getElementById('email-error').style.display = 'block';
-                } else {
-                    alert(data.message);
-                }
+                console.warn("业务逻辑失败:", data.message);
+                btn.disabled = false;
+                btn.textContent = '注册';
+                alert(data.message);
             }
         })
         .catch(error => {
-            alert('注册失败: ' + error);
+            console.error("6. 代码发生异常报错:", error);
+            btn.disabled = false;
+            btn.textContent = '注册';
+            alert('前端执行异常，请查看 F12 控制台: ' + error);
         });
     }
 

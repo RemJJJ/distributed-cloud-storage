@@ -44,8 +44,8 @@ class BaseHandler : public std::enable_shared_from_this<BaseHandler> {
     std::vector<RoutePattern> routes_;
 
   public:
-    BaseHandler() = default;
-    virtual ~BaseHandler() = default;
+    BaseHandler();
+    virtual ~BaseHandler();
 
     // 连接回调（子类可覆盖）
     virtual void onConnection(const TcpConnectionPtr &conn);
@@ -60,7 +60,7 @@ class BaseHandler : public std::enable_shared_from_this<BaseHandler> {
                   RequestHandler handler);
 
     // 子类必须实现：初始化自己的路由
-    virtual void initRoutes() = 0;
+    virtual void initRoutes();
 
     // 【通用】URL解码
     static std::string urlDecode(const std::string &encoded);

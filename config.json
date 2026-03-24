@@ -1,6 +1,6 @@
 {
     "master":{
-        "port":8080,
+        "port":8000,
         "num_threads": 4
     },
     "mysql":{
@@ -8,11 +8,16 @@
         "port": 3307,
         "user": "RemJJJ",
         "password": "mysql@RemJJJ",
-        "database": "file_manager"
+        "database": "file_manager",
+        "maxConnections": 20,
+        "minConnections": 2,
+        "maxIdleTime": 600,
+        "connectionTimout": 10
     },
     "datanode":{
         "master_host": "localhost",
         "master_port": 8080,
         "local_port": 9000
-    }
+    },
+    "jwt-secret": "MySuperSecretKey_2026_DistributedSystem_DoNotShare!@#$%^&*"
 }

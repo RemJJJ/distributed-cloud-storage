@@ -1,5 +1,19 @@
 #include "BaseHandler.h"
 
+BaseHandler::BaseHandler() {}
+
+BaseHandler::~BaseHandler() {}
+
+void BaseHandler::onConnection(const TcpConnectionPtr &conn) {
+    // 默认实现，子类可覆盖
+    LOG_INFO << "Connection established";
+}
+
+void BaseHandler::initRoutes() {
+    // 默认实现，子类覆盖
+    LOG_INFO << "BaseHandler::initRoutes";
+}
+
 bool BaseHandler::onRequest(const TcpConnectionPtr &conn, HttpRequest &req,
                             std::shared_ptr<HttpResponse> &resp) {
     std::string path = req.path();

@@ -2,10 +2,11 @@
 #pragma once
 #include "BaseHandler.h"
 #include "FileUploadContext.h"
-#include "HeartbeatHandler.h"
 #include "NodeManager.h"
-#include "RegisterNodeHandler.h"
+#include "UserHandler.h"
 #include "base/ThreadPool.h"
+#include "db/MySQLPool.h"
+#include "db/MySQLStatement.h"
 #include <atomic>
 #include <cstdio>
 #include <experimental/filesystem>
@@ -30,41 +31,8 @@ class HttpUploadHandler : public BaseHandler {
     std::map<std::string, std::string>
         filenameMapping_; // <服务器文件名, 原始文件名>
 
-    // MySQL连接
-    MYSQL *mysql;
-    std::string dbHost;
-    std::string dbUser;
-    std::string dbPassword;
-    std::string dbName;
-    unsigned int dbPort;
-
-    // 初始化数据库连接
-    bool initDatabase();
-
-    // 关闭数据库连接
-    void closeDatabase();
-
-    // 执行SQL查询
-    bool executeQuery(const std::string &query);
-
-    // 执行SQL并获取自增ID
-    bool executeInsertQuery(const std::string &query, uint64_t &lastInsertId) {
-        if (!executeQuery(query)) {
-            return false;
-        }
-        lastInsertId = mysql_insert_id(mysql);
-        return true;
-    }
-
-    // 执行SQL查询并获取结果
-    MYSQL_RES *executeQueryWithResult(const std::string &query);
-
   public:
-    HttpUploadHandler(int numThreads, const std::string &dbHost = "localhost",
-                      const std::string &dbUser = "RemJJJ",
-                      const std::string &dbPassword = "mysql@RemJJJ",
-                      const std::string &dbName = "file_manager",
-                      unsigned int dbPort = 3307);
+    HttpUploadHandler(int numThreads);
 
     ~HttpUploadHandler();
 
@@ -78,13 +46,6 @@ class HttpUploadHandler : public BaseHandler {
     void onConnection(const TcpConnectionPtr &conn) override;
 
   private:
-    std::string generateSessionId();
-
-    std::string sha256(const std::string &input);
-
-    void saveSession(const std::string &sessionId, int userId,
-                     const std::string &username);
-
     void saveFilenameMapping();
 
     void saveFilenameMappingInternal();
@@ -94,14 +55,9 @@ class HttpUploadHandler : public BaseHandler {
     void addFilenameMapping(const std::string &serverFilename,
                             const std::string &originalFilename);
 
-    bool validateSession(const std::string &sessionId, int &userId,
-                         std::string &username);
-
     std::string generateUniqueFilename(const std::string &prefix);
 
     std::string getFileType(const std::string &filename);
-
-    std::string escapeString(const std::string &str);
 
     bool handleFavicon(const TcpConnectionPtr &conn, HttpRequest &req,
                        std::shared_ptr<HttpResponse> &resp);
@@ -111,12 +67,6 @@ class HttpUploadHandler : public BaseHandler {
 
     bool handleListFiles(const TcpConnectionPtr &conn, HttpRequest &req,
                          std::shared_ptr<HttpResponse> &resp);
-
-    bool handleRegister(const TcpConnectionPtr &conn, HttpRequest &req,
-                        std::shared_ptr<HttpResponse> &resp);
-
-    bool handleLogin(const TcpConnectionPtr &conn, HttpRequest &req,
-                     std::shared_ptr<HttpResponse> &resp);
 
     bool handleFileUpload(const TcpConnectionPtr &conn, HttpRequest &req,
                           std::shared_ptr<HttpResponse> &resp);

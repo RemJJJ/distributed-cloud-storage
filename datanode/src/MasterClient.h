@@ -1,6 +1,8 @@
 #pragma once
+#include "base/Timestamp.h"
 #include "net/Buffer.h"
 #include "net/EventLoop.h"
+#include "net/HttpContext.h"
 #include "net/TcpClient.h"
 #include <queue>
 
@@ -29,6 +31,12 @@ class MasterClient {
                             const std::string &server_filename,
                             size_t stored_size);
 
+    /// @brief 获取当前节点ID
+    std::string getNodeId() const;
+
+    /// @brief 检查是否已注册
+    bool isRegistered() const;
+
   private:
     //------muduo网络回调------
 
@@ -50,7 +58,13 @@ class MasterClient {
     /// @brief 发送HTTP POST请求
     /// @c path 请求路径
     /// @c body 请求体
-    void post(const std::string &path, const std::string &body);
+    void post(const std::string &path, const std::string &body, bool needAuth);
+
+    /// @brief 处理注册响应
+    void handleRegisterResponse(const std::string &response);
+
+    /// @brief Token过期检查定时器
+    void checkTokenExpired();
 
     ///@brief 在EventLoop线程中实际执行通知的函数
     void doNotifyUploadFinish(const std::string &file_id,
@@ -60,6 +74,9 @@ class MasterClient {
     /// @brief 处理待发送的通知队列
     void procPendingNotice();
 
+    /// @brief 解析JSON Body
+    void parseResponseBody(const std::string &body);
+
     //------成员变量------
     fn::EventLoop *loop_;                   // 绑定loop
     std::unique_ptr<fn::TcpClient> client_; // muduo TcpClient
@@ -68,6 +85,12 @@ class MasterClient {
     fn::InetAddress masterAddr_;
     fn::InetAddress myAddr_;
 
+    // -----------------新增成员变量-----------------
+    std::string nodeId_;                  // 注册后获得的节点ID
+    std::string token_;                   // JWT Token
+    std::atomic<bool> registered_{false}; // 是否已注册
+    mutable std::mutex authMutex_;        // 保护认证信息
+
     struct PendingNotice {
         std::string file_id;
         std::string server_filename;
@@ -75,4 +98,8 @@ class MasterClient {
     };
     std::queue<PendingNotice> pendingNotifications_;
     std::mutex pendingMutex_; // 保护队列的互斥锁
+
+    fn::TimerId tokenRefreshTimerId_;
+
+    static constexpr double TOKEN_REFRESH_INTERVAL = 23 * 3600.0;
 };

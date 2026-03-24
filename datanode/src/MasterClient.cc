@@ -1,6 +1,8 @@
 #include "MasterClient.h"
 #include "base/Logging.h"
 #include "base/Timestamp.h"
+#include "net/HttpContext.h"
+#include "net/TimerId.h"
 #include <mutex>
 #include <nlohmann/json.hpp>
 #include <queue>
@@ -24,6 +26,13 @@ MasterClient::~MasterClient() { LOG_INFO << "~MasterClient()"; }
 
 void MasterClient::start() { client_->connect(); }
 
+std::string MasterClient::getNodeId() const {
+    std::lock_guard<std::mutex> lock(authMutex_);
+    return nodeId_;
+}
+
+bool MasterClient::isRegistered() const { return registered_.load(); }
+
 void MasterClient::onConnection(const fn::TcpConnectionPtr &conn) {
     if (conn->connected()) {
         conn_ = conn;
@@ -35,23 +44,146 @@ void MasterClient::onConnection(const fn::TcpConnectionPtr &conn) {
     } else {
         LOG_INFO << "Disconnected from Master: " << masterAddr_.toIpPort();
         conn_.reset();
+        registered_.store(false);
+
+        // 断开时取消定时器
+        loop_->cancel(tokenRefreshTimerId_);
+        tokenRefreshTimerId_ = fn::TimerId();
     }
 }
 
 void MasterClient::onMessage(const fn::TcpConnectionPtr &conn, fn::Buffer *buf,
                              fileserver::Timestamp time) {
-    // 第一版：直接把 Master 的响应读出来丢弃，或者打印日志看看
-    std::string msg = buf->retrieveAllAsString();
-    LOG_DEBUG << "收到 Master 响应: " << msg;
+
+    // 解析状态行
+    const char *crlf = buf->findCRLF();
+    if (!crlf) {
+        LOG_DEBUG << "等待完整状态行...";
+        return; // 数据不完整，等待更多
+    }
+
+    // 解析状态行：HTTP/1.1 401 Unauthorized
+    std::string statusLine(buf->peek(), crlf);
+    buf->retrieveUntil(crlf + 2); // 跳过状态行和\r\n
+
+    size_t firstSpace = statusLine.find(' ');
+    size_t secondSpace = statusLine.find(' ', firstSpace + 1);
+
+    if (firstSpace == std::string::npos || secondSpace == std::string::npos) {
+        LOG_ERROR << "无效的状态行：" << statusLine;
+        return;
+    }
+
+    int statusCode = std::stoi(
+        statusLine.substr(firstSpace + 1, secondSpace - firstSpace - 1));
+
+    LOG_DEBUG << "HTTP 状态码：" << statusCode;
+
+    // 检查 401 未授权
+    if (statusCode == 401) {
+        LOG_WARN << "Token 失效 (HTTP 401)，重新注册...";
+        registerNode();
+        buf->retrieveAll(); // 丢弃剩余数据
+        return;
+    }
+
+    // 解析头部，找到空行
+    size_t headerBytes = 0;
+    bool foundEmptyLine = false;
+
+    while (buf->readableBytes() >= 2) {
+        const char *nextCRLF = buf->findCRLF();
+        if (!nextCRLF) {
+            // 还没找到完整的行，等待更多数据
+            // 先把已读取的状态行恢复回去（因为我们要等完整头部）
+            LOG_DEBUG << "等待完整头部...";
+            return;
+        }
+
+        size_t lineLen = nextCRLF - buf->peek();
+        // 检查是否是空行（头部结束标志）
+        if (lineLen == 0) {
+            foundEmptyLine = true;
+            buf->retrieveUntil(nextCRLF + 2); // 跳过空行的\r\n
+            break;
+        }
+
+        // 跳过这一行头部
+        buf->retrieveUntil(nextCRLF + 2);
+    }
+    if (!foundEmptyLine) {
+        LOG_DEBUG << "等待头部结束空行...";
+        return;
+    }
+
+    // 剩余的就是body
+    std::string body = buf->retrieveAllAsString();
+    if (statusCode == 200) {
+        parseResponseBody(body);
+    } else {
+        LOG_WARN << "HTTP 错误状态码：" << statusCode;
+    }
+}
+
+void MasterClient::parseResponseBody(const std::string &body) {
+    try {
+        json respJson = json::parse(body);
+
+        if (respJson.contains("node_id") && respJson.contains("token")) {
+            handleRegisterResponse(body);
+        } else if (respJson.contains("code")) {
+            int code = respJson["code"].get<int>();
+            if (code != 0) {
+                LOG_WARN << "Master 业务错误: code=" << code;
+            }
+        }
+    } catch (const json::exception &e) {
+        LOG_DEBUG << "响应 body 不是 JSON: " << e.what();
+    }
+}
+
+void MasterClient::handleRegisterResponse(const std::string &response) {
+    try {
+        json respJson = json::parse(response);
+
+        std::string newToken = respJson["token"].get<std::string>();
+        std::string newNodeId = respJson["node_id"].get<std::string>();
+
+        {
+            std::lock_guard<std::mutex> lock(authMutex_);
+            token_ = newToken;
+            nodeId_ = newNodeId;
+            registered_.store(true);
+        }
+        LOG_INFO << "注册成功! nodeId=" << nodeId_
+                 << ", token 前 10 字符=" << newToken.substr(0, 10) << "...";
+
+        // 先取消旧定时器，在创建新的
+        loop_->cancel(tokenRefreshTimerId_);
+        tokenRefreshTimerId_ = loop_->runEvery(
+            TOKEN_REFRESH_INTERVAL, [this]() { checkTokenExpired(); });
+
+    } catch (const json::exception &e) {
+        LOG_ERROR << "解析注册响应失败：" << e.what();
+    }
+}
+
+void MasterClient::checkTokenExpired() {
+    // Token快过期了，主动重新注册获取新Token
+    if (conn_ && conn_->connected()) {
+        LOG_INFO << "Token 即将过期，主动刷新...";
+        registerNode();
+    }
 }
 
 void MasterClient::registerNode() {
     json request = {
         {"ip", myAddr_.toIp()}, {"port", myAddr_.port()}, {"status", "active"}};
-    post("/registerNode", request.dump());
+    post("/registerNode", request.dump(), false);
     LOG_INFO << "Register node request sent: " << request.dump();
 }
 
+// ====================心跳请求(需要Token)===================
 void MasterClient::startHeartbeat(double intervalSeconds) {
     loop_->runEvery(intervalSeconds,
                     std::bind(&MasterClient::sendHeartbeat, this));
@@ -62,15 +194,31 @@ void MasterClient::sendHeartbeat() {
         LOG_WARN << "未连接到Master, 跳过本次心跳";
         return;
     }
+
+    if (!registered_.load()) {
+        LOG_WARN << "尚未注册，先注册再心跳";
+        registerNode(); // ???
+        return;
+    }
+
+    std::string currentToken;
+    std::string currentNodeId;
+    {
+        std::lock_guard<std::mutex> lock(authMutex_);
+        currentToken = token_;
+        currentNodeId = nodeId_;
+    }
     json hbMessage = {
+        {"node_id", currentNodeId},
         {"ip", myAddr_.toIp()},
         {"port", myAddr_.port()},
         {"timestamp", fileserver::Timestamp::now().microSecondsSinceEpoch()}};
-    post("/heartbeat", hbMessage.dump());
+    post("/heartbeat", hbMessage.dump(), true);
     LOG_INFO << "Heartbeat sent: " << hbMessage.dump();
 }
 
-void MasterClient::post(const std::string &path, const std::string &body) {
+void MasterClient::post(const std::string &path, const std::string &body,
+                        bool needAuth) {
     if (!conn_ || !conn_->connected()) {
         LOG_ERROR << "Not connected to Master, cannot send POST request";
         return;
@@ -92,13 +240,25 @@ void MasterClient::post(const std::string &path, const std::string &body) {
     requestHeader += "Connection: Keep-Alive\r\n";
     // 可选：User-Agent（增加通用性）
     requestHeader += "User-Agent: MasterClient/1.0\r\n";
+
+    // 如果需要认证，添加Authorization头
+    if (needAuth) {
+        std::string authHeader;
+        {
+            std::lock_guard<std::mutex> lock(authMutex_);
+            authHeader = token_;
+        }
+        if (!authHeader.empty()) {
+            requestHeader += "Authorization: Bearer " + authHeader + "\r\n";
+        } else {
+            LOG_WARN << "需要认证但Token为空!";
+        }
+    }
     // 关键：header 末尾必须有 \r\n\r\n 分隔 body
     requestHeader += "\r\n";
 
     std::string request = requestHeader + body;
     conn_->send(request);
-    LOG_INFO << "POST request sent:" << "\nHeader: " << requestHeader
-             << "\nBody: " << body;
 }
 
 // ----------线程安全的通知入口------------
@@ -127,8 +287,25 @@ void MasterClient::doNotifyUploadFinish(const std::string &file_id,
         return;
     }
 
+    if (!registered_.load()) {
+        LOG_WARN << "尚未注册,先注册再通知";
+        registerNode();
+        std::lock_guard<std::mutex> lock(pendingMutex_);
+        pendingNotifications_.push({file_id, server_filename, stored_size});
+        return;
+    }
+
+    std::string currentToken;
+    std::string currentNodeId;
+    {
+        std::lock_guard<std::mutex> lock(authMutex_);
+        currentToken = token_;
+        currentNodeId = nodeId_;
+    }
+
     // 构造JSON请求体
     json reqJson;
+    reqJson["node_id"] = currentNodeId;
     reqJson["file_id"] = file_id;
     reqJson["node_ip"] = myAddr_.toIp();
     reqJson["node_port"] = myAddr_.port();
@@ -140,7 +317,7 @@ void MasterClient::doNotifyUploadFinish(const std::string &file_id,
     // post
     std::string path = "/notify_upload_finish";
     std::string body = reqJson.dump();
-    post(path, body);
+    post(path, body, true);
 
     LOG_INFO << "Notified Master of upload finish: " << file_id;
 }
@@ -156,7 +333,7 @@ void MasterClient::procPendingNotice() {
         std::swap(tempQueue, pendingNotifications_);
     }
 
-    // 出个发送
+    // 逐个发送
     while (!tempQueue.empty()) {
         auto &notification = tempQueue.front();
         doNotifyUploadFinish(notification.file_id, notification.server_filename,

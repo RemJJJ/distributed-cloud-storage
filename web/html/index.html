@@ -5,6 +5,7 @@
     <meta charset="utf-8">
     <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
     <link rel="icon" type="image/x-icon" href="/favicon.ico">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/spark-md5/3.0.2/spark-md5.min.js"></script>
     <style>
         body { 
             font-family: Arial, sans-serif; 
@@ -649,6 +650,7 @@
     let videoAbortController = null;
 
     // 会话管理
+    let token = localStorage.getItem('token');
     let sessionId = localStorage.getItem('sessionId');
     let currentUser = localStorage.getItem('username');
 
@@ -688,7 +690,7 @@
 
     // 检查登录状态
     function checkLoginStatus() {
-        if (sessionId && currentUser) {
+        if (token && currentUser) {
             document.getElementById('login-form').classList.add('hidden');
             document.getElementById('main-content').classList.remove('hidden');
             document.getElementById('user-info').classList.remove('hidden');
@@ -740,9 +742,9 @@
         .then(response => response.json())
         .then(data => {
             if (data.code === 0) {
-                sessionId = data.sessionId;
+                token = data.token;
                 currentUser = username;
-                localStorage.setItem('sessionId', sessionId);
+                localStorage.setItem('token', token);
                 localStorage.setItem('username', username);
                 checkLoginStatus();
             } else {
@@ -768,14 +770,14 @@
         fetch('/logout', {
             method: 'POST',
             headers: {
-                'X-Session-ID': sessionId
+                'Authorization': 'Bearer ' + localStorage.getItem('token')
             }
         })
         .then(response => response.json())
         .then(data => {
-            localStorage.removeItem('sessionId');
+            localStorage.removeItem('token');
             localStorage.removeItem('username');
-            sessionId = null;
+            token = null;
             currentUser = null;
             checkLoginStatus();
         })
@@ -784,72 +786,191 @@
         });
     }
 
-    // 修改现有函数以添加会话ID
-    function uploadFile() {
-        if (!sessionId) {
-            alert('请先登录');
-            return;
-        }
+    // 辅助函数：分块计算大文件 MD5
+    function calculateMD5(file, onProgress) {
+    return new Promise((resolve, reject) => {
+        const chunkSize = 2 * 1024 * 1024; // 每次读取 2MB
+        const chunks = Math.ceil(file.size / chunkSize);
+        let currentChunk = 0;
+        const spark = new SparkMD5.ArrayBuffer();
+        const fileReader = new FileReader();
 
-        const fileInput = document.getElementById('file-input');
-        const file = fileInput.files[0];
-        if (!file) {
-            alert('请选择文件');
-            return;
-        }
+        fileReader.onload = function (e) {
+            spark.append(e.target.result); // 追加数据
+            currentChunk++;
+            
+            if (onProgress) {
+                onProgress(Math.round((currentChunk / chunks) * 100));
+            }
 
-        const progress = document.querySelector('.progress');
-        const progressBar = document.querySelector('.progress-bar');
-        progress.style.display = 'block';
-
-        const xhr = new XMLHttpRequest();
-        xhr.open('POST', '/upload', true);
-        xhr.setRequestHeader('X-Session-ID', sessionId);
-
-        xhr.upload.onprogress = function(e) {
-            if (e.lengthComputable) {
-                const percentComplete = (e.loaded / e.total) * 100;
-                progressBar.style.width = percentComplete + '%';
+            if (currentChunk < chunks) {
+                loadNext();
+            } else {
+                resolve(spark.end()); // 完成计算，返回 MD5 字符串
             }
         };
 
+        fileReader.onerror = function () {
+            reject('文件读取失败');
+        };
+
+        function loadNext() {
+            const start = currentChunk * chunkSize;
+            const end = ((start + chunkSize) >= file.size) ? file.size : start + chunkSize;
+            fileReader.readAsArrayBuffer(file.slice(start, end));
+        }
+
+        loadNext();
+    });
+}
+
+    async function uploadFile() {
+    const userToken = localStorage.getItem('token'); // 获取用户登录 Token
+    if (!userToken) {
+        alert('请先登录');
+        return;
+    }
+
+    const fileInput = document.getElementById('file-input');
+    const file = fileInput.files[0];
+    if (!file) {
+        alert('请选择文件');
+        return;
+    }
+
+    const progress = document.querySelector('.progress');
+    const progressBar = document.querySelector('.progress-bar');
+    progress.style.display = 'block';
+    
+    try {
+        // 计算文件MD5
+        progressBar.textContent = '正在扫描文件 (计算MD5)...';
+        progressBar.style.width = '10%';
+        
+        const fileMd5 = await calculateMD5(file, (percent) => {
+            // 扫描进度 (只占前 10% 的进度条视觉效果)
+            progressBar.style.width = (percent * 0.1) + '%'; 
+        });
+
+        // ==========================================
+        // 第一阶段：向 Master 申请上传地址
+        // ==========================================
+        progressBar.textContent = '正在请求服务器...';
+
+        const requestResponse = await fetch('/upload', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': 'Bearer ' + userToken // 验证用户身份
+            },
+            body: JSON.stringify({
+                original_filename: file.name,
+                file_size: file.size,
+                file_type: file.type || 'application/octet-stream',
+                md5: fileMd5
+            })
+        });
+
+        const requestData = await requestResponse.json();
+
+        if(requestData.code ===1){
+            progressBar.style.width = '100%';
+            progressBar.textContent = '秒传成功！';
+            progressBar.style.backgroundColor = '#4CAF50';
+            alert('极速秒传成功！');
+            loadFileList();
+            setTimeout(() => { progress.style.display = 'none'; }, 1500);
+            return; // 直接结束，不需要走 DataNode 了！
+        }
+        
+        if (requestData.code !== 0) {
+            throw new Error(requestData.message || '获取上传地址失败');
+        }
+
+        // 拿到 Master 分配的 DataNode 地址和专属上传 Token
+        const uploadUrl = requestData.data.uploadUrl;
+        const uploadToken = requestData.data.uploadToken;
+
+        // ==========================================
+        // 第二阶段：向 DataNode 真正上传文件
+        // ==========================================
+        progressBar.textContent = '正在上传...';
+        
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', uploadUrl, true); // 注意：这里用的是 Master 返回的动态 URL！
+        
+        // ⚠️ 极其重要：这里带的是 Master 刚刚签发的专属 uploadToken，而不是用户的登录 Token！
+        xhr.setRequestHeader('Authorization', 'Bearer ' + uploadToken); 
+        // 如果你的 DataNode 还需要原文件名，可以保留这个头，否则可以删掉
+        xhr.setRequestHeader('X-File-Name', encodeURIComponent(file.name));
+
+        // 监听上传进度
+        xhr.upload.onprogress = function(e) {
+            if (e.lengthComputable) {
+                const percentComplete = Math.round((e.loaded / e.total) * 100);
+                progressBar.style.width = percentComplete + '%';
+                progressBar.textContent = percentComplete + '%';
+            }
+        };
+
+        // 监听上传完成
         xhr.onload = function() {
             if (xhr.status === 200) {
                 alert('上传成功');
-                loadFileList();
+                loadFileList(); // 刷新文件列表
             } else {
-                const response = JSON.parse(xhr.responseText);
-                alert('上传失败: ' + response.message);
+                try {
+                    const response = JSON.parse(xhr.responseText);
+                    alert('上传失败: ' + (response.message || xhr.statusText));
+                } catch (e) {
+                    alert('上传失败: 服务器返回异常状态 ' + xhr.status);
+                }
             }
-            progress.style.display = 'none';
-            progressBar.style.width = '0%';
-            fileInput.value = '';  // 清空文件选择
+            // 恢复 UI 状态
+            setTimeout(() => {
+                progress.style.display = 'none';
+                progressBar.style.width = '0%';
+                progressBar.textContent = '';
+                fileInput.value = '';  // 清空文件选择
+            }, 1000);
         };
 
+        // 监听网络错误
+        xhr.onerror = function() {
+            alert('网络错误，无法连接到存储节点！');
+            progress.style.display = 'none';
+        };
+
+        // 组装表单数据并发送给 DataNode
         const formData = new FormData();
         formData.append('file', file);
-        xhr.setRequestHeader('X-File-Name', encodeURIComponent(file.name));
         xhr.send(formData);
+
+    } catch (error) {
+        alert('操作失败: ' + error.message);
+        progress.style.display = 'none';
+        progressBar.style.width = '0%';
     }
+}
 
     function loadFileList() {
-        if (!sessionId) {
+        if(!token){
             return;
         }
 
         fetch('/files', {
             headers: {
-                'X-Session-ID': sessionId
+                'Authorization': 'Bearer ' + localStorage.getItem('token')
             }
         })
         .then(response => {
             if (response.status === 401) {
-                localStorage.removeItem('sessionId');
+                localStorage.removeItem('token');
                 localStorage.removeItem('username');
-                sessionId = null;
+                token= null;
                 currentUser = null;
                 checkLoginStatus();
-                throw new Error('会话已过期，请重新登录');
+                throw new Error('Token已过期, 请重新登录');
             }
             return response.json();
         })
