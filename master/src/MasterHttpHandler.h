@@ -57,8 +57,6 @@ class HttpUploadHandler : public BaseHandler {
 
     std::string generateUniqueFilename(const std::string &prefix);
 
-    std::string getFileType(const std::string &filename);
-
     bool handleFavicon(const TcpConnectionPtr &conn, HttpRequest &req,
                        std::shared_ptr<HttpResponse> &resp);
 

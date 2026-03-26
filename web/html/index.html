@@ -566,6 +566,11 @@
 
     <div id="main-content" class="hidden">
         <h1>C++个人云存储项目</h1>
+        <!-- 🌟 新增：顶部导航栏 -->
+        <div style="margin-bottom: 20px; display: flex; gap: 10px;">
+            <button class="dialog-button primary" onclick="switchTab('my-files')">我的文件</button>
+            <button class="dialog-button secondary" onclick="switchTab('shared-with-me')">与我共享</button>
+        </div>
         <div class="upload-form">
             <input type="file" id="file-input">
             <button class="upload-button" onclick="uploadFile()">上传文件</button>
@@ -604,7 +609,7 @@
                         <input type="radio" name="shareType" value="protected"> 需要提取码（任何人可通过提取码访问）
                     </label>
                     <label>
-                        <input type="radio" name="shareType" value="user"> 指定用户（仅特定用户可访问）
+                        <input type="radio" name="shareType" value="specific"> 指定用户（仅特定用户可访问）
                     </label>
                 </div>
                 
@@ -649,40 +654,51 @@
         </div>
     </div>
 
+    <!-- 🌟 新增：与我共享区域 -->
+    <div id="shared-with-me-section" style="display: none;">
+        <h2>别人分享给我的文件</h2>
+        <div id="shared-list"></div>
+    </div>
+
     <script>
     // 添加 AbortController 用于控制视频连接
     let videoAbortController = null;
 
     // 会话管理
     let token = localStorage.getItem('token');
-    let sessionId = localStorage.getItem('sessionId');
     let currentUser = localStorage.getItem('username');
 
     // 下载文件函数
     async function downloadFile(filename, originalName) {
-        if (!sessionId) {
+        if (!token) {
             alert('请先登录');
             return;
         }
 
         try {
-            const response = await fetch(`/download/${filename}`, {
+            const response = await fetch(`/download/${encodeURIComponent(filename)}`, {
                 headers: {
-                    'X-Session-ID': sessionId
+                    'Authorization' : 'Bearer ' + token
                 }
             });
 
-            if (!response.ok) {
-                const data = await response.json();
-                throw new Error(data.message || '下载失败');
-            }
+            if(response.status === 404)throw new Error("接口不存在，请检查路由");
+            const result = await response.json();
+            if (result.code !== 0) throw new Error(result.message);
 
-            // 获取文件内容并创建下载
-            const blob = await response.blob();
+            // 拿到 DataNode 地址和专属 Token
+            const downloadUrl = `${result.data.downloadUrl}?token=${result.data.token}`;
+
+            // 注意：因为是跨域下载，直接用 a.href = url 可能会导致浏览器直接打开视频而不是下载。
+            // 稳妥的做法是用 fetch 拿到 blob 再下载。
+            const dnRes = await fetch(downloadUrl);
+            if (!dnRes.ok) throw new Error("从存储节点下载失败");
+            
+            const blob = await dnRes.blob();
             const url = window.URL.createObjectURL(blob);
             const a = document.createElement('a');
             a.href = url;
-            a.download = originalName;  // 使用原始文件名
+            a.download = originalName;
             document.body.appendChild(a);
             a.click();
             window.URL.revokeObjectURL(url);
@@ -700,6 +716,7 @@
             document.getElementById('user-info').classList.remove('hidden');
             document.getElementById('username-display').textContent = currentUser;
             loadFileList();
+            loadSharedWithMeList();
         } else {
             document.getElementById('login-form').classList.remove('hidden');
             document.getElementById('main-content').classList.add('hidden');
@@ -771,6 +788,8 @@
 
     // 退出登录
     function logout() {
+        console.log("执行登出")
+        const userToken = localStorage.getItem('token');
         fetch('/logout', {
             method: 'POST',
             headers: {
@@ -1083,7 +1102,7 @@
                     shareStatus.style.color = '#666';
                     
                     let shareText = getShareTypeText(file.shareInfo.type);
-                    if (file.shareInfo.type === 'user' && file.shareInfo.sharedWithUsername) {
+                    if (file.shareInfo.type === 'specific' && file.shareInfo.sharedWithUsername) {
                         shareText += ` (分享给：${file.shareInfo.sharedWithUsername})`;
                     }
                     
@@ -1094,7 +1113,7 @@
                     let statusHtml = `分享状态：${shareText}`;
                     
                     if (file.shareInfo.shareCode) {
-                        const shareLink = `${window.location.origin}/share/${file.shareInfo.shareCode}`;
+                        const shareLink = `${window.location.origin}/s/${file.shareInfo.shareCode}`;
                         statusHtml += `<br>分享链接：<a href="${shareLink}" target="_blank">${shareLink}</a>
                             <button class="copy-button" onclick="copyText('share-link-${file.id}')">复制链接</button>`;
                         
@@ -1324,30 +1343,27 @@
         console.log('视频已关闭，资源已释放');
     }
 
-    function deleteFile(filename) {
-        if (!sessionId) {
+    async function deleteFile(filename) {
+        if (!token) {
             alert('请先登录');
             return;
         }
 
-        fetch(`/delete/${filename}`, {
-            method: 'DELETE',
-            headers: {
-                'X-Session-ID': sessionId
-            }
-        })
-        .then(response => response.json())
-        .then(data => {
+        try {
+            const response = await fetch(`/delete?filename=${encodeURIComponent(filename)}`, {
+                method: 'DELETE',
+                headers: { 'Authorization': 'Bearer ' + token }
+            });
+            const data = await response.json();
             if (data.code === 0) {
-                alert('文件删除成功');
+                showMessage('文件删除成功', 'success');
                 loadFileList();
             } else {
-                alert('删除失败: ' + data.message);
+                showMessage('删除失败: ' + data.message, 'error');
             }
-        })
-        .catch(error => {
-            alert('删除失败: ' + error);
-        });
+        } catch (error) {
+            showMessage('删除失败: ' + error, 'error');
+        }
     }
 
     function previewImage(filename, originalName) {
@@ -1485,10 +1501,10 @@
             const expireTime = document.querySelector('.expire-time');
             
             // 对于其他分享类型
-            userSearch.style.display = this.value === 'user' ? 'block' : 'none';
+            userSearch.style.display = this.value === 'specific' ? 'block' : 'none';
             expireTime.style.display = 'block';
             
-            if (this.value === 'user') {
+            if (this.value === 'specific') {
                 document.querySelector('#userSearchInput').focus();
             }
         });
@@ -1515,7 +1531,7 @@
         try {
             const response = await fetch(`/users/search?keyword=${encodeURIComponent(keyword)}`, {
                 headers: {
-                    'X-Session-ID': localStorage.getItem('sessionId')
+                    'Authorization': 'Bearer ' + localStorage.getItem('token')// 验证用户身份
                 }
             });
             
@@ -1552,22 +1568,33 @@
     // 修改分享文件函数
     async function shareFile() {
         if (!currentShareFile) return;
+
+        const token = localStorage.getItem('token');
+        if(!token){
+            alert('请先登录');
+            return;
+        }
         
-        const shareType = document.querySelector('input[name="shareType"]:checked').value;
+        const shareType = document.querySelector('input[name="shareType"]:checked').value;  
         if (shareType === 'private') return;
-        
-        const expireHours = parseInt(document.querySelector('.expire-time select').value);
+
+        const expireSelect = document.querySelector('.expire-time select');
+        const expireHours = expireSelect? parseInt(expireSelect.value):0;
         
         const shareData = {
             fileId: currentShareFile.id,
             shareType: shareType,
-            expireTime: expireHours || null
+            expireTime: expireHours || 0
         };
         
         console.log(shareType);
 
-        if (shareType === 'user' && selectedUserId) {
-            shareData.sharedWithId = selectedUserId;
+        if (shareType === 'specific') {
+            if (!selectedUserId) {
+                alert('请先搜索并选择要分享的用户！');
+                return;
+            }
+            shareData.sharedWithId = parseInt(selectedUserId);
         }
 
         console.log(selectedUserId);
@@ -1577,38 +1604,82 @@
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
-                    'X-Session-ID': localStorage.getItem('sessionId')
+                    'Authorization': 'Bearer '+token
                 },
                 body: JSON.stringify(shareData)
             });
             
-            const data = await response.json();
+            const result = await response.json();
             
-            if (data.code === 0) {
+            if (result.code === 0) {
                 // 显示分享信息
+                const responseData = result.data;
                 document.querySelector('.share-options').style.display = 'none';
                 document.querySelector('.share-info').style.display = 'block';
                 
-                const shareLink = `${window.location.origin}/share/${data.shareCode}`;
-                document.querySelector('#shareLink').textContent = shareLink;
-                
-                const extractCodeContainer = document.querySelector('#extractCodeContainer');
-                if (data.extractCode) {
-                    document.querySelector('#extractCode').textContent = data.extractCode;
-                    extractCodeContainer.style.display = 'block';
+                // 🌟 修改 4：根据分享类型展示不同的 UI
+                if (shareType === 'specific') {
+                    // 定向分享没有链接，直接提示成功
+                    showMessage('已成功发送给指定用户！对方可在"与我共享"中查看。', 'success');
+                    closeShareDialog();
                 } else {
-                    extractCodeContainer.style.display = 'none';
+                    // 公开或加密分享，前端动态拼接完整的分享链接 (适配任何域名/端口)
+                    const shareLink = `${window.location.origin}/s/${responseData.shareId}`;
+                    document.querySelector('#shareLink').textContent = shareLink;
+                    
+                    // 如果有提取码，展示提取码
+                    if (responseData.extractCode) {
+                        document.querySelector('#extractCode').textContent = responseData.extractCode;
+                        extractCodeContainer.style.display = 'block';
+                    } else {
+                        extractCodeContainer.style.display = 'none';
+                    }
                 }
                 
                 // 更新文件列表中的分享状态
                 loadFileList();
             } else {
-                showMessage(data.message, 'error');
+                showMessage(result.message, 'error');
             }
         } catch (error) {
             console.error('分享文件出错:', error);
             showMessage('分享文件失败，请稍后重试', 'error');
         }
+    }
+
+    function switchTab(tabId) {
+        document.getElementById('file-list').style.display = tabId === 'my-files' ? 'block' : 'none';
+        document.getElementById('shared-with-me-section').style.display = tabId === 'shared-with-me' ? 'block' : 'none';
+    }
+
+    // 🌟 新增：加载与我共享列表
+    async function loadSharedWithMeList() {
+        try {
+            const res = await fetch('/api/share/received', {
+                headers: { 'Authorization': 'Bearer ' + token }
+            });
+            const result = await res.json();
+            const listDiv = document.getElementById('shared-list');
+            listDiv.innerHTML = '';
+            
+            result.data.forEach(file => {
+                listDiv.innerHTML += `
+                    <div class="file-item">
+                        <div class="file-header">
+                            <span class="file-name">${file.originalName}</span>
+                            <button class="action-button download-button" onclick="downloadFile('${file.filename}', '${file.originalName}')">
+                                <i class="fas fa-download"></i> 下载
+                            </button>
+                        </div>
+                        <div class="file-info">
+                            <span>分享者: ${file.sharerName}</span>
+                            <span>大小: ${formatSize(file.size)}</span>
+                            <span>时间: ${file.shareTime}</span>
+                        </div>
+                    </div>
+                `;
+            });
+        } catch (e) { console.error(e); }
     }
 
     // 复制并关闭
@@ -1692,17 +1763,14 @@
     // 添加取消分享函数
     async function cancelShare(fileId) {
         try {
-            const response = await fetch('/share', {
+            const response = await fetch('/share/cancel', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
-                    'X-Session-ID': localStorage.getItem('sessionId')
+                    'Authorization': 'Bearer ' + token
                 },
-                body: JSON.stringify({
-                    fileId: fileId,
-                    shareType: 'private'
-                })
-            });
+                body: JSON.stringify({ fileId: fileId })
+                });
             
             const data = await response.json();
             if (data.code === 0) {

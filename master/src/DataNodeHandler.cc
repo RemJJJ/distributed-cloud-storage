@@ -8,26 +8,6 @@
 #include <string>
 #include <unordered_set>
 
-void DataNodeHandler::sendError(std::shared_ptr<fn::HttpResponse> &resp,
-                                const std::string &message,
-                                fn::HttpResponse::HttpStatusCode code,
-                                const fn::TcpConnectionPtr &conn) {
-    json response = {{"code", static_cast<int>(code)}, {"message", message}};
-    resp->setStatusCode(code);
-    resp->setStatusMessage(message);
-    resp->setContentType("application/json");
-    resp->addHeader("Connection", "close");
-    resp->setBody(response.dump());
-
-    if (conn) {
-        conn->setWriteCompleteCallback(
-            [conn](const fn::TcpConnectionPtr &connection) {
-                connection->shutdown();
-                return true;
-            });
-    }
-}
-
 // 注册节点
 bool DataNodeHandler::handleRegisterNode(
     const fn::TcpConnectionPtr &conn, fn::HttpRequest &req,

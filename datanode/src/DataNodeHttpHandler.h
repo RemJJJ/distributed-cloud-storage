@@ -176,4 +176,6 @@ class DataNodeHttpHandler : public BaseHandler {
     /// @brief 处理文件下载
     bool handleFileDownload(const TcpConnectionPtr &conn, HttpRequest &req,
                             std::shared_ptr<HttpResponse> &resp);
+
+    std::string getMimeType(const std::string &filename);
 };

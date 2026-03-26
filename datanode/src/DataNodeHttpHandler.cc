@@ -66,6 +66,27 @@ DataNodeHttpHandler::DataNodeHttpHandler(DataNode *datanode)
 
 DataNodeHttpHandler::~DataNodeHttpHandler() {}
 
+std::string DataNodeHttpHandler::getMimeType(const std::string &filename) {
+    static std::unordered_map<std::string, std::string> mimeMap = {
+        {".mp4", "video/mp4"},   {".jpg", "image/jpeg"},
+        {".jpeg", "image/jpeg"}, {".png", "image/png"},
+        {".gif", "image/gif"},   {".pdf", "application/pdf"},
+        {".txt", "text/plain"},  {".zip", "application/zip"},
+        {".html", "text/html"},  {".mp3", "audio/mpeg"}};
+
+    std::string ext;
+    size_t pos = filename.find_last_of('.');
+    if (pos != std::string::npos) {
+        ext = filename.substr(pos);
+    }
+
+    if (mimeMap.count(ext)) {
+        return mimeMap[ext];
+    }
+
+    return "application/octet-stream";
+}
+
 /// TODO: 初始化路由表
 void DataNodeHttpHandler::initRoutes() {
     addRoute("/api/datanode/upload", HttpRequest::kOptions,
@@ -264,8 +285,9 @@ bool DataNodeHttpHandler::handleFileDownload(
     std::string token = req.getQuery("token");
     uint64_t file_id;
     std::string serverFilename;
-    if (!TokenManager::instance().verifyUploadToken(token, file_id,
-                                                    serverFilename)) {
+    std::string originalFilename;
+    if (!TokenManager::instance().verifyDownloadToken(token, originalFilename,
+                                                      serverFilename)) {
         sendError(resp, "非法请求", HttpResponse::k403Forbidden, conn);
         return true;
     }
@@ -297,7 +319,10 @@ bool DataNodeHttpHandler::handleFileDownload(
     resp->setStatusCode(isRange ? HttpResponse::k206PartialContent
                                 : HttpResponse::k200Ok);
     resp->addHeader("Accept-Ranges", "bytes");
-    resp->setContentType("video/mp4"); // 简单起见写死，实际应根据后缀判断
+    resp->addHeader("Content-Disposition",
+                    "attachment; filename=\"" + originalFilename + "\"");
+    resp->setContentType(
+        getMimeType(originalFilename)); // 简单起见写死，实际应根据后缀判断
     if (isRange) {
         resp->addHeader("Content-Range", "bytes " + std::to_string(startPos) +
                                              "-" + std::to_string(endPos) +

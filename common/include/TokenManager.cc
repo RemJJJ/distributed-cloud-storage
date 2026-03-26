@@ -54,9 +54,9 @@ TokenManager::generateUserToken(int userId, const std::string &username) {
 
 // 生成文件上传token
 TokenManager::fileUploadResponse
-TokenManager::generateFileToken(int userId, uint64_t file_id,
-                                const std::string &node_id,
-                                const std::string &server_filename) {
+TokenManager::generateUploadToken(int userId, uint64_t file_id,
+                                  const std::string &node_id,
+                                  const std::string &server_filename) {
     std::string token;
     auto now = std::chrono::system_clock::now();
     try {
@@ -83,6 +83,37 @@ TokenManager::generateFileToken(int userId, uint64_t file_id,
     }
     LOG_INFO << "Create file upload token";
     return {std::to_string(file_id), token};
+}
+
+// 生成下载Token
+std::string
+TokenManager::generateDownloadToken(int userId,
+                                    const std::string &original_filename,
+                                    const std::string &server_filename) {
+    auto now = std::chrono::system_clock::now();
+    std::string token;
+    try {
+        token = jwt::create()
+                    .set_issuer("fileserver_master")
+                    .set_type("JWT")
+                    .set_payload_claim("token_type",
+                                       jwt::claim(std::string("download")))
+                    .set_payload_claim("user_id",
+                                       jwt::claim(std::to_string(userId)))
+                    .set_payload_claim("server_filename",
+                                       jwt::claim(server_filename))
+                    .set_payload_claim("original_filename",
+                                       jwt::claim(original_filename))
+                    .set_issued_at(now)
+                    .set_expires_at(
+                        now + std::chrono::hours(2)) // 下载链接 2 小时有效
+                    .sign(jwt::algorithm::hs256{secretKey_});
+    } catch (const std::exception &e) {
+        LOG_ERROR << "Failed to sign JWT: " << e.what();
+        return "";
+    }
+    LOG_INFO << "Create file download token";
+    return token;
 }
 
 // 生成节点token
@@ -200,4 +231,17 @@ bool TokenManager::verifyUploadToken(const std::string &token,
         LOG_WARN << "上传 Token 字段解析异常";
         return false;
     }
+}
+
+bool TokenManager::verifyDownloadToken(const std::string &token,
+                                       std::string &out_original_filename,
+                                       std::string &out_server_filename) {
+    auto result = verifyToken(token);
+    if (!result.success ||
+        result.payload.value("token_type", "") != "download") {
+        return false;
+    }
+    out_original_filename = result.payload.value("original_filename", "");
+    out_server_filename = result.payload.value("server_filename", "");
+    return !out_server_filename.empty();
 }

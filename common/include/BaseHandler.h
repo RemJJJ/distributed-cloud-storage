@@ -1,4 +1,5 @@
 #pragma once
+#include "HandlerUtils.h"
 #include "base/Logging.h"
 #include "net/EventLoop.h"
 #include "net/HttpContext.h"
@@ -20,7 +21,8 @@ using namespace fileserver;
 using namespace fileserver::net;
 using json = nlohmann::json;
 
-class BaseHandler : public std::enable_shared_from_this<BaseHandler> {
+class BaseHandler : public std::enable_shared_from_this<BaseHandler>,
+                    public handlerUtils {
   protected:
     // 请求处理函数类型
     using RequestHandler =
@@ -67,17 +69,8 @@ class BaseHandler : public std::enable_shared_from_this<BaseHandler> {
     // 子类必须实现：初始化自己的路由
     virtual void initRoutes();
 
-    // 【通用】URL解码
-    static std::string urlDecode(const std::string &encoded);
-
     // 【通用】正则转义
     static std::string escapeRegex(const std::string &str);
-
-    // 【通用】统一错误响应
-    static void sendError(const std::shared_ptr<HttpResponse> &resp,
-                          const std::string &message,
-                          HttpResponse::HttpStatusCode code,
-                          const TcpConnectionPtr &conn);
 
     // 【通用】默认处理：404
     bool handleNotFound(const TcpConnectionPtr &conn,

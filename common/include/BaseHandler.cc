@@ -72,30 +72,6 @@ void BaseHandler::addRoute(const std::string &pattern,
     routes_.emplace_back(pattern, paramNames, handler, method);
 }
 
-std::string BaseHandler::urlDecode(const std::string &encoded) {
-    std::string result;
-    char ch;
-    size_t i;
-    int ii;
-    size_t len = encoded.length();
-
-    for (i = 0; i < len; i++) {
-        if (encoded[i] != '%') {
-            if (encoded[i] == '+') {
-                result += ' ';
-            } else {
-                result += encoded[i];
-            }
-        } else {
-            sscanf(encoded.substr(i + 1, 2).c_str(), "%x", &ii);
-            ch = static_cast<char>(ii);
-            result += ch;
-            i = i + 2;
-        }
-    }
-    return result;
-}
-
 std::string BaseHandler::escapeRegex(const std::string &str) {
     std::string result;
     for (char c : str) {
@@ -107,26 +83,6 @@ std::string BaseHandler::escapeRegex(const std::string &str) {
         result += c;
     }
     return result;
-}
-
-void BaseHandler::sendError(const std::shared_ptr<HttpResponse> &resp,
-                            const std::string &message,
-                            HttpResponse::HttpStatusCode code,
-                            const TcpConnectionPtr &conn) {
-    json response = {{"code", static_cast<int>(code)}, {"message", message}};
-    resp->setStatusCode(code);
-    resp->setStatusMessage(message);
-    resp->setContentType("application/json");
-    resp->addHeader("Connection", "close");
-    resp->setBody(response.dump());
-
-    if (conn) {
-        conn->setWriteCompleteCallback(
-            [conn](const TcpConnectionPtr &connection) {
-                connection->shutdown();
-                return true;
-            });
-    }
 }
 
 bool BaseHandler::handleNotFound(const TcpConnectionPtr &conn,

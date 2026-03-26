@@ -69,6 +69,13 @@ void HttpUploadHandler::initRoutes() {
                     std::shared_ptr<HttpResponse> &resp) {
                  return handleIndex(conn, req, resp);
              });
+    addRoute("/s/([^/]+)", HttpRequest::kGet,
+             [this](const TcpConnectionPtr &conn, HttpRequest &req,
+                    std::shared_ptr<HttpResponse> &resp) {
+                 // 读取本地的 share.html 并返回给浏览器
+                 return handleIndex(conn, req, resp);
+             },
+             {"share_id"}); // 捕获 share_id
 
     // UserHandler
     auto userHandler = std::make_shared<UserHandler>();
@@ -81,6 +88,41 @@ void HttpUploadHandler::initRoutes() {
              [userHandler](const TcpConnectionPtr &conn, HttpRequest &req,
                            std::shared_ptr<HttpResponse> &resp) {
                  return userHandler->handleLogin(conn, req, resp);
+             });
+    addRoute("/logout", fileserver::net::HttpRequest::kPost,
+             [userHandler](const TcpConnectionPtr &conn, HttpRequest &req,
+                           std::shared_ptr<HttpResponse> &resp) {
+                 return userHandler->handleLogout(conn, req, resp);
+             });
+    addRoute("/users/search", fileserver::net::HttpRequest::kGet,
+             [userHandler](const TcpConnectionPtr &conn, HttpRequest &req,
+                           std::shared_ptr<HttpResponse> &resp) {
+                 return userHandler->handleSearchUsers(conn, req, resp);
+             });
+    addRoute("/share", fileserver::net::HttpRequest::kPost,
+             [userHandler](const TcpConnectionPtr &conn, HttpRequest &req,
+                           std::shared_ptr<HttpResponse> &resp) {
+                 return userHandler->handleShareFile(conn, req, resp);
+             });
+    addRoute("/share/cancel", HttpRequest::kPost,
+             [userHandler](const TcpConnectionPtr &conn, HttpRequest &req,
+                           std::shared_ptr<HttpResponse> &resp) {
+                 return userHandler->handleCancelShare(conn, req, resp);
+             });
+    addRoute("/share/info", HttpRequest::kGet,
+             [userHandler](const TcpConnectionPtr &conn, HttpRequest &req,
+                           std::shared_ptr<HttpResponse> &resp) {
+                 return userHandler->handleShareInfo(conn, req, resp);
+             });
+    addRoute("/share/verify", HttpRequest::kPost,
+             [userHandler](const TcpConnectionPtr &conn, HttpRequest &req,
+                           std::shared_ptr<HttpResponse> &resp) {
+                 return userHandler->handleShareVerify(conn, req, resp);
+             });
+    addRoute("/api/share/received", HttpRequest::kGet,
+             [userHandler](const TcpConnectionPtr &conn, HttpRequest &req,
+                           std::shared_ptr<HttpResponse> &resp) {
+                 return userHandler->handleListSharedWithMe(conn, req, resp);
              });
 
     // 需要会话验证的路由
@@ -189,125 +231,62 @@ HttpUploadHandler::generateUniqueFilename(const std::string &prefix) {
            std::to_string(dis(gen));
 }
 
-std::string HttpUploadHandler::getFileType(const std::string &filename) {
-    size_t dotPos = filename.find_last_of('.');
-    if (dotPos != std::string::npos && dotPos < filename.length() - 1) {
-        std::string extension = filename.substr(dotPos + 1);
-        std::transform(extension.begin(), extension.end(), extension.begin(),
-                       ::tolower);
-
-        // 根据扩展名判断文件类型
-        if (extension == "jpg" || extension == "jpeg" || extension == "png" ||
-            extension == "gif") {
-            return "image";
-        } else if (extension == "mp4" || extension == "avi" ||
-                   extension == "mov" || extension == "wmv") {
-            return "video";
-        } else if (extension == "pdf") {
-            return "pdf";
-        } else if (extension == "doc" || extension == "docx") {
-            return "word";
-        } else if (extension == "xls" || extension == "xlsx") {
-            return "excel";
-        } else if (extension == "ppt" || extension == "pptx") {
-            return "powerpoint";
-        } else if (extension == "txt" || extension == "csv") {
-            return "text";
-        } else {
-            return "other";
-        }
-    }
-    return "unknown";
-}
-
+// 🌟 重构后的 handleIndex：通用的静态 HTML 页面处理器
 bool HttpUploadHandler::handleIndex(const TcpConnectionPtr &conn,
                                     HttpRequest &req,
                                     std::shared_ptr<HttpResponse> &resp) {
-    // 1. 设置基础响应头
-    resp->setStatusCode(HttpResponse::k200Ok);
-    resp->setStatusMessage("OK");
-    resp->setContentType("text/html; charset=utf-8");
-
-    // 2. 获取请求路径
+    // 1. 确定请求的物理文件名
+    std::string targetFile;
     const std::string &path = req.path();
-    std::string filePath;
-    LOG_INFO << "Request path = " << path;
+    LOG_DEBUG << path;
 
-    // 3. 核心逻辑：通过可执行文件路径定位项目根目录（彻底抛弃__FILE__）
-    char exePath[1024] = {0};
-    ssize_t len = readlink("/proc/self/exe", exePath, sizeof(exePath) - 1);
-    if (len == -1) {
-        // 读取可执行文件路径失败，降级使用相对路径（master/src →
-        // 项目根）
-        LOG_WARN << "Failed to get executable path: " << strerror(errno)
-                 << ", use fallback relative path";
-        filePath = "../../web/html/index.html";
+    if (path == "/" || path == "/index.html") {
+        targetFile = "index.html";
+    } else if (path == "/register.html") {
+        targetFile = "register.html";
+    } else if (path.find("/s/") == 0) { // 匹配 /s/aB3x9Y 这种短链
+        targetFile = "share.html";
     } else {
-        // 解析可执行文件完整路径，回退到项目根目录
-        std::string exeFullPath(exePath, len);
-        LOG_DEBUG << "Executable full path = " << exeFullPath;
-
-        // 步骤1：截取可执行文件所在目录（master/src）
-        std::string::size_type pos = exeFullPath.find_last_of('/');
-        if (pos == std::string::npos) {
-            LOG_ERROR << "Invalid executable path: " << exeFullPath;
-            filePath = "../../web/html/index.html";
-        } else {
-            std::string srcDir = exeFullPath.substr(0, pos); // master/src
-
-            // 步骤2：回退到master目录
-            pos = srcDir.find_last_of('/');
-            if (pos == std::string::npos) {
-                LOG_ERROR << "Failed to find master directory from: " << srcDir;
-                filePath = "../web/html/index.html";
-            } else {
-                std::string masterDir = srcDir.substr(0, pos); // master
-
-                // 步骤3：回退到项目根目录（distributed-fm）
-                pos = masterDir.find_last_of('/');
-                if (pos == std::string::npos) {
-                    LOG_ERROR << "Failed to find project root from: "
-                              << masterDir;
-                    filePath = "./web/html/index.html";
-                } else {
-                    std::string projectRoot =
-                        masterDir.substr(0, pos); // distributed-fm
-                    LOG_INFO << "Project root directory = " << projectRoot;
-
-                    // 步骤4：拼接目标HTML文件路径
-                    if (path == "/register.html") {
-                        filePath = projectRoot + "/web/html/register.html";
-                    } else if (path == "/share.html" ||
-                               path.find("/share/") == 0) {
-                        filePath = projectRoot + "/web/html/share.html";
-                    } else {
-                        filePath = projectRoot + "/web/html/index.html";
-                    }
-                }
-            }
-        }
+        targetFile = "index.html"; // 默认兜底
     }
+    LOG_DEBUG << targetFile;
 
-    // 从文件中读取HTML内容
-    std::ifstream file(filePath);
+    // 2. 确定 Web 根目录
+    // 假设你在 build 目录下执行 ./master/master，那么相对路径就是 ./html/
+    // 建议在生产环境中，把这个路径写进 Config.h 里
+    std::string webRoot = "./html/";
+    std::string filePath = webRoot + targetFile;
+
+    LOG_INFO << "Serving static file: " << filePath << " for path: " << path;
+
+    // 3. 读取文件内容
+    std::ifstream file(filePath, std::ios::binary);
     if (!file.is_open()) {
         LOG_ERROR << "Failed to open " << filePath;
-        sendError(resp, "Failed to open " + filePath,
-                  HttpResponse::k500InternalServerError, conn);
+        // 如果找不到文件，返回 404 而不是 500
+        sendError(resp, "404 Not Found: " + targetFile,
+                  HttpResponse::k404NotFound, conn);
         return true;
     }
 
+    // 高效读取整个文件到 string
     std::string html((std::istreambuf_iterator<char>(file)),
                      std::istreambuf_iterator<char>());
     file.close();
 
-    resp->addHeader("Connection", "close");
+    // 4. 组装响应
+    resp->setStatusCode(HttpResponse::k200Ok);
+    resp->setStatusMessage("OK");
+    resp->setContentType("text/html; charset=utf-8");
     resp->setBody(html);
+    resp->addHeader("Content-Length", std::to_string(html.size()));
+    resp->addHeader("Connection", "close");
 
     conn->setWriteCompleteCallback([](const TcpConnectionPtr &connection) {
         connection->shutdown();
         return true;
     });
+
     return true;
 }
 
@@ -355,14 +334,16 @@ bool HttpUploadHandler::handleListFiles(const TcpConnectionPtr &conn,
             "WHERE (fs.shared_with_id = ? OR fs.share_type = 'public') "
             "AND f.user_id != ?";
     } else if (listType == "all") {
-        sqlTemplate =
-            "SELECT DISTINCT f.id, f.filename, f.original_filename, " // 增加DISTINCT防止重复
-            "f.file_size, f.file_type, f.created_at, "
-            "CASE WHEN f.user_id = ? THEN 1 ELSE 0 END as is_owner "
-            "FROM files f "
-            "LEFT JOIN file_shares fs ON f.id = fs.file_id "
-            "WHERE f.user_id = ? OR fs.shared_with_id = ? OR fs.share_type = "
-            "'public'";
+        sqlTemplate = "SELECT DISTINCT f.id, f.filename, "
+                      "f.original_filename, " // 增加DISTINCT防止重复
+                      "f.file_size, f.file_type, f.created_at, "
+                      "CASE WHEN f.user_id = ? THEN 1 ELSE 0 END as "
+                      "is_owner "
+                      "FROM files f "
+                      "LEFT JOIN file_shares fs ON f.id = fs.file_id "
+                      "WHERE f.user_id = ? OR fs.shared_with_id = ? OR "
+                      "fs.share_type = "
+                      "'public'";
     } else {
         sendError(resp, "Invalid list type", fn::HttpResponse::k400BadRequest,
                   conn);
@@ -596,9 +577,9 @@ bool HttpUploadHandler::handleFileUpload(const TcpConnectionPtr &conn,
         // ==========================================
         if (!fileMd5.empty()) {
             // 查找数据库中是否已经有这个MD5且状态为success的文件
-            std::string checkSql =
-                "SELECT node_id, filename FROM files WHERE file_md5 = ? AND "
-                "status = 'success' LIMIT 1";
+            std::string checkSql = "SELECT node_id, filename FROM files "
+                                   "WHERE file_md5 = ? AND "
+                                   "status = 'success' LIMIT 1";
 
             db::MySQLStatement checkStmt(*mysql, checkSql);
             checkStmt.bindString(fileMd5);
@@ -613,12 +594,14 @@ bool HttpUploadHandler::handleFileUpload(const TcpConnectionPtr &conn,
                     LOG_INFO << "触发秒传!MD5: " << fileMd5
                              << " 复用物理文件: " << existServerFilename;
 
-                    // 直接为当前用户插入一条新记录，状态直接标记为 'success'
+                    // 直接为当前用户插入一条新记录，状态直接标记为
+                    // 'success'
                     std::string fastInsertSql =
                         "INSERT INTO files (filename, original_filename, "
                         "file_size, file_type, user_id, node_id, status, "
                         "file_md5, created_at, updated_at) "
-                        "VALUES (?, ?, ?, ?, ?, ?, 'success', ?, NOW(), NOW())";
+                        "VALUES (?, ?, ?, ?, ?, ?, 'success', ?, NOW(), "
+                        "NOW())";
                     db::MySQLStatement fastStmt(*mysql, fastInsertSql);
 
                     fastStmt.bindString(
@@ -681,7 +664,7 @@ bool HttpUploadHandler::handleFileUpload(const TcpConnectionPtr &conn,
         auto fileId = stmt.insertId();
 
         // 生成专属token
-        auto fileUploadResponse = TokenManager::instance().generateFileToken(
+        auto fileUploadResponse = TokenManager::instance().generateUploadToken(
             userId, fileId, dataNode->id_, serverFilename);
 
         //  组装响应，告诉客户端去哪里上传
@@ -720,7 +703,6 @@ bool HttpUploadHandler::handleFileUpload(const TcpConnectionPtr &conn,
 bool HttpUploadHandler::handleDownload(
     const fn::TcpConnectionPtr &conn, fn::HttpRequest &req,
     std::shared_ptr<fn::HttpResponse> &resp) {
-
     // 验证用户登录状态
     std::string authHeader = req.getHeader("Authorization");
     std::string userToken =
@@ -741,11 +723,17 @@ bool HttpUploadHandler::handleDownload(
 
     auto mysql = db::MySQLPool::instance().getConnection();
     std::string querySql =
-        "SELECT id, node_id, filename, file_size FROM files WHERE "
-        "filename = ? AND user_id = ? AND status = 'success' LIMIT 1";
+        "SELECT f.id, f.node_id, f.original_filename, f.file_size "
+        "FROM files f "
+        "LEFT JOIN file_shares s ON f.id = s.file_id AND s.share_type = "
+        "'specific' AND s.target_user_id = ? "
+        "WHERE f.filename = ? AND f.status = 'success' "
+        "AND (f.user_id = ? OR s.share_id IS NOT NULL) "
+        "LIMIT 1";
     db::MySQLStatement stmt(*mysql, querySql);
-    stmt.bindString(serverFilename);
-    stmt.bindInt(userId);
+    stmt.bindInt(userId);            // 对应 s.target_user_id = ?
+    stmt.bindString(serverFilename); // 对应 f.filename = ?
+    stmt.bindInt(userId);            // 对应 f.user_id = ?
 
     if (!stmt.execute()) {
         sendError(resp, "数据库错误", fn::HttpResponse::k500InternalServerError,
@@ -762,25 +750,26 @@ bool HttpUploadHandler::handleDownload(
 
     int64_t fileId = rs->getInt64(0);
     std::string nodeId = rs->getString(1);
-    std::string filename = rs->getString(2);
+    std::string original_filename = rs->getString(2);
     uintmax_t fileSize = rs->getInt64(3);
 
     // 获取 DataNode 地址
+    LOG_DEBUG << "nodeId: " << nodeId;
     auto nodeInfo = NodeManager::instance().getNodeInfo(nodeId);
     if (!nodeInfo || !nodeInfo->isAlive_) {
         sendError(resp, "存储节点离线",
                   fn::HttpResponse::k500InternalServerError, conn);
         return true;
     }
-    auto fileResponse = TokenManager::instance().generateFileToken(
-        userId, fileId, nodeId, serverFilename);
+    auto fileResponse = TokenManager::instance().generateDownloadToken(
+        userId, original_filename, serverFilename);
 
     // 返回 DataNode 播放地址
     json response = {{"code", 0},
                      {"data",
                       {{"downloadUrl", "http://" + nodeInfo->addr_.toIpPort() +
                                            "/api/datanode/download"},
-                       {"token", fileResponse.token},
+                       {"token", fileResponse},
                        {"fileSize", fileSize}}}};
 
     resp->setStatusCode(fn::HttpResponse::k200Ok);

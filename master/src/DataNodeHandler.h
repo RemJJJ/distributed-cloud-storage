@@ -1,10 +1,11 @@
 #pragma once
+#include "HandlerUtils.h"
 #include "NodeManager.h"
 #include "net/HttpRequest.h"
 #include "net/HttpResponse.h"
 #include "net/TcpConnection.h"
 
-class DataNodeHandler {
+class DataNodeHandler : public handlerUtils {
   public:
     // 注册节点
     bool handleRegisterNode(const fn::TcpConnectionPtr &conn,
@@ -23,11 +24,4 @@ class DataNodeHandler {
     bool handleReportFiles(const fn::TcpConnectionPtr &conn,
                            fn::HttpRequest &req,
                            std::shared_ptr<fn::HttpResponse> &resp);
-
-  private:
-    // 辅助函数
-    static void sendError(std::shared_ptr<fn::HttpResponse> &resp,
-                          const std::string &message,
-                          fn::HttpResponse::HttpStatusCode code,
-                          const fn::TcpConnectionPtr &conn);
 };

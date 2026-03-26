@@ -1,4 +1,5 @@
 #pragma once
+#include "HandlerUtils.h"
 #include "net/Callbacks.h"
 #include "net/HttpRequest.h"
 #include "net/HttpResponse.h"
@@ -7,7 +8,7 @@
 
 namespace fn = fileserver::net;
 
-class UserHandler {
+class UserHandler : public handlerUtils {
   public:
     // 用户注册
     bool handleRegister(const fn::TcpConnectionPtr &conn, fn::HttpRequest &req,
@@ -18,9 +19,6 @@ class UserHandler {
                      std::shared_ptr<fn::HttpResponse> &resp);
 
     // 用户登出(可选: Token黑名单)
-    // static bool handleLogout(const fn::TcpConnectionPtr& conn,
-    // fn::HttpRequest& req,
-    // std::shared_ptr<fn::HttpResponse>& resp);
     bool handleLogout(const fn::TcpConnectionPtr &conn, fn::HttpRequest &req,
                       std::shared_ptr<fn::HttpResponse> &resp);
 
@@ -29,10 +27,35 @@ class UserHandler {
                           fn::HttpRequest &req,
                           std::shared_ptr<fn::HttpResponse> &resp);
 
+    // 搜索用户
+    bool handleSearchUsers(const fn::TcpConnectionPtr &conn,
+                           fn::HttpRequest &req,
+                           std::shared_ptr<fn::HttpResponse> &resp);
+
+    // 处理文件分享
+    bool handleShareFile(const fn::TcpConnectionPtr &conn, fn::HttpRequest &req,
+                         std::shared_ptr<fn::HttpResponse> &resp);
+
+    // 取消文件分享
+    bool handleCancelShare(const fn::TcpConnectionPtr &conn,
+                           fn::HttpRequest &req,
+                           std::shared_ptr<fn::HttpResponse> &resp);
+
+    // 获取分享文件信息
+    bool handleShareInfo(const fn::TcpConnectionPtr &conn, fn::HttpRequest &req,
+                         std::shared_ptr<fn::HttpResponse> &resp);
+
+    // 验证提取吗并获得下载地址
+    bool handleShareVerify(const fn::TcpConnectionPtr &conn,
+                           fn::HttpRequest &req,
+                           std::shared_ptr<fn::HttpResponse> &resp);
+
+    // 查询定向分享给我的文件
+    bool handleListSharedWithMe(const fn::TcpConnectionPtr &conn,
+                                fn::HttpRequest &req,
+                                std::shared_ptr<fn::HttpResponse> &resp);
+
   private:
-    // 辅助函数
-    static void sendError(std::shared_ptr<fn::HttpResponse> &resp,
-                          const std::string &message,
-                          fn::HttpResponse::HttpStatusCode code,
-                          const fn::TcpConnectionPtr &conn);
+    std::string generateShareCode();
+    std::string generateExtractCode();
 };

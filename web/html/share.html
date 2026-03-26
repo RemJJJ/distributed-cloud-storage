@@ -1,581 +1,173 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>文件分享 - 提取文件</title>
+    <title>文件分享提取</title>
     <meta charset="utf-8">
-    <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
     <style>
-        body {
-            font-family: Arial, sans-serif;
-            max-width: 800px;
-            margin: 0 auto;
-            padding: 20px;
-            background-color: #f5f5f5;
-        }
-        .share-container {
-            background: white;
-            padding: 30px;
-            border-radius: 10px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-            text-align: center;
-            margin-top: 50px;
-        }
-        h1 {
-            color: #2196F3;
-            margin-bottom: 30px;
-        }
-        .code-input {
-            margin: 20px 0;
-        }
-        .code-input input {
-            width: 80%;
-            max-width: 300px;
-            padding: 12px;
-            border: 2px solid #e0e0e0;
-            border-radius: 8px;
-            font-size: 16px;
-            text-align: center;
-            letter-spacing: 2px;
-            text-transform: uppercase;
-        }
-        .code-input input:focus {
-            border-color: #2196F3;
-            outline: none;
-            box-shadow: 0 0 5px rgba(33, 150, 243, 0.3);
-        }
-        .submit-button {
-            background-color: #2196F3;
-            color: white;
-            border: none;
-            padding: 12px 30px;
-            border-radius: 6px;
-            font-size: 16px;
-            cursor: pointer;
-            transition: background-color 0.3s;
-        }
-        .submit-button:hover {
-            background-color: #1976D2;
-        }
-        .submit-button:disabled {
-            background-color: #cccccc;
-            cursor: not-allowed;
-        }
-        .error-message {
-            color: #f44336;
-            margin-top: 10px;
-            display: none;
-            padding: 10px;
-            background-color: #ffebee;
-            border-radius: 4px;
-        }
-        .file-info {
-            margin-top: 30px;
-            padding: 20px;
-            background: #f8f9fa;
-            border-radius: 8px;
-            text-align: left;
-            display: none;
-        }
-        .file-info h3 {
-            margin: 0 0 15px 0;
-            color: #2196F3;
-        }
-        .file-info p {
-            margin: 8px 0;
-            color: #666;
-        }
-        .download-button {
-            background-color: #4CAF50;
-            color: white;
-            border: none;
-            padding: 12px 30px;
-            border-radius: 6px;
-            font-size: 16px;
-            cursor: pointer;
-            margin-top: 20px;
-            transition: background-color 0.3s;
-        }
-        .download-button:hover {
-            background-color: #45a049;
-        }
-        .loading {
-            display: none;
-            margin: 20px 0;
-        }
-        .loading::after {
-            content: '';
-            display: inline-block;
-            width: 20px;
-            height: 20px;
-            border: 2px solid #2196F3;
-            border-radius: 50%;
-            border-top-color: transparent;
-            animation: spin 1s linear infinite;
-        }
-        @keyframes spin {
-            to { transform: rotate(360deg); }
-        }
-        .share-type-message {
-            margin: 20px 0;
-            font-size: 18px;
-            color: #666;
-        }
-        /* 添加视频和图片预览样式 */
-        .preview-container {
-            margin: 20px 0;
-            display: none;
-        }
-        .video-preview {
-            width: 100%;
-            max-width: 800px;
-            margin: 0 auto;
-        }
-        .video-preview video {
-            width: 100%;
-            border-radius: 8px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-        }
-        .image-preview {
-            width: 100%;
-            max-width: 800px;
-            margin: 0 auto;
-        }
-        .image-preview img {
-            width: 100%;
-            max-height: 600px;
-            object-fit: contain;
-            border-radius: 8px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-        }
-        .preview-button {
-            background-color: #2196F3;
-            color: white;
-            border: none;
-            padding: 8px 16px;
-            border-radius: 4px;
-            cursor: pointer;
-            margin-top: 10px;
-            transition: background-color 0.3s;
-        }
-        .preview-button:hover {
-            background-color: #1976D2;
-        }
-        /* 添加视频播放器和遮罩层 */
-        .video-player {
-            display: none;
-            position: fixed;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
-            background: rgba(0, 0, 0, 0.9);
-            padding: 10px;
-            border-radius: 5px;
-            z-index: 1000;
-            max-width: 95%;
-            max-height: 95vh;
-        }
-        .video-player video {
-            max-width: 100%;
-            max-height: 90vh;
-            display: block;
-            margin: 0 auto;
-        }
-        .close-button {
-            position: absolute;
-            top: 5px;
-            right: 5px;
-            background: none;
-            border: none;
-            color: white;
-            font-size: 24px;
-            cursor: pointer;
-            padding: 0;
-            width: 30px;
-            height: 30px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            z-index: 1002;
-        }
-        .close-button:hover {
-            color: #f44336;
-        }
-        .video-controls {
-            position: relative;
-            background: rgba(0, 0, 0, 0.7);
-            padding: 10px;
-            border-radius: 5px;
-            display: flex;
-            flex-direction: column;
-            gap: 5px;
-            margin-top: 5px;
-        }
-        .overlay {
-            display: none;
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: rgba(0, 0, 0, 0.7);
-            z-index: 999;
-        }
+        body { font-family: 'Segoe UI', Arial, sans-serif; background-color: #f0f2f5; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
+        .card { background: white; padding: 40px; border-radius: 12px; box-shadow: 0 8px 30px rgba(0,0,0,0.1); width: 100%; max-width: 450px; text-align: center; box-sizing: border-box; }
+        h2 { color: #1976D2; margin-top: 0; }
+        .filename { font-size: 1.3em; color: #333; margin: 20px 0; word-break: break-all; font-weight: bold; }
+        .info { color: #666; margin-bottom: 30px; font-size: 0.95em; background: #f8f9fa; padding: 15px; border-radius: 8px; }
+        .info p { margin: 5px 0; }
+        input { width: 100%; box-sizing: border-box; padding: 15px; margin: 10px 0; border: 2px solid #e0e0e0; border-radius: 8px; text-align: center; letter-spacing: 4px; font-size: 1.2em; transition: border-color 0.3s; }
+        input:focus { border-color: #2196F3; outline: none; }
+        button { background: #2196F3; color: white; border: none; padding: 15px 30px; border-radius: 8px; cursor: pointer; font-size: 1.1em; width: 100%; transition: background 0.3s; font-weight: bold; }
+        button:hover { background: #1976D2; }
+        button:disabled { background: #bdbdbd; cursor: not-allowed; }
+        #error-msg { color: #d32f2f; margin-top: 15px; display: none; font-size: 0.9em; background: #ffebee; padding: 10px; border-radius: 4px; }
+        .loading-spinner { display: inline-block; width: 30px; height: 30px; border: 3px solid #f3f3f3; border-top: 3px solid #2196F3; border-radius: 50%; animation: spin 1s linear infinite; margin-bottom: 15px; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
     </style>
 </head>
 <body>
-    <div class="share-container">
-        <h1>文件分享</h1>
-        <div id="loading" class="loading"></div>
-        <div id="error-message" class="error-message"></div>
-        
-        <!-- 公开分享区域 -->
-        <div id="public-share" style="display: none;">
-            <div class="share-type-message">这是一个公开分享的文件</div>
-            <div class="file-info" id="file-info">
-                <h3>文件信息</h3>
-                <p>文件名：<span id="file-name"></span></p>
-                <p>文件大小：<span id="file-size"></span></p>
-                <p>分享时间：<span id="share-time"></span></p>
-                <p>过期时间：<span id="expire-time"></span></p>
-                <div class="preview-container" id="preview-container">
-                    <div id="video-preview" class="video-preview">
-                        <video controls preload="metadata" type="video/mp4" crossorigin="anonymous">
-                            您的浏览器不支持视频播放。
-                        </video>
-                    </div>
-                    <div id="image-preview" class="image-preview">
-                        <img src="" alt="预览图片">
-                    </div>
-                </div>
-                <button class="download-button" onclick="downloadFile()">下载文件</button>
-            </div>
-        </div>
-
-        <!-- 受保护分享区域 -->
-        <div id="protected-share" style="display: none;">
-            <div class="share-type-message">这是一个受保护的文件，请输入提取码</div>
-            <div class="code-input">
-                <input type="text" id="share-code" placeholder="请输入6位提取码" maxlength="6" autocomplete="off">
-            </div>
-            <button class="submit-button" onclick="verifyShareCode()" id="submit-button">提取文件</button>
-            <div class="file-info" id="protected-file-info" style="display: none;">
-                <h3>文件信息</h3>
-                <p>文件名：<span id="protected-file-name"></span></p>
-                <p>文件大小：<span id="protected-file-size"></span></p>
-                <p>分享时间：<span id="protected-share-time"></span></p>
-                <p>过期时间：<span id="protected-expire-time"></span></p>
-                <div class="preview-container" id="protected-preview-container">
-                    <div id="protected-video-preview" class="video-preview">
-                        <video controls preload="metadata" type="video/mp4" crossorigin="anonymous">
-                            您的浏览器不支持视频播放。
-                        </video>
-                    </div>
-                    <div id="protected-image-preview" class="image-preview">
-                        <img src="" alt="预览图片">
-                    </div>
-                </div>
-                <button class="download-button" onclick="downloadFile()">下载文件</button>
-            </div>
-        </div>
+    <!-- 加载中状态 -->
+    <div class="card" id="loading-card">
+        <div class="loading-spinner"></div>
+        <h3 style="color: #666; margin:0;">正在获取分享信息...</h3>
     </div>
 
-    <!-- 添加视频播放器和遮罩层 -->
-    <div class="overlay" id="overlay"></div>
-    <div class="video-player" id="video-player">
-        <button class="close-button" id="video-close-button">&times;</button>
-        <video id="video-element" controls>
-            您的浏览器不支持视频播放。
-        </video>
-        <div class="video-controls">
+    <!-- 主界面 -->
+    <div class="card" id="main-card" style="display: none;">
+        <h2>文件分享</h2>
+        <div class="filename" id="file-name"></div>
+        <div class="info">
+            <p>分享者：<strong id="sharer-name"></strong></p>
+            <p>文件大小：<strong id="file-size"></strong></p>
         </div>
+        
+        <!-- 提取码输入区 (仅加密分享显示) -->
+        <div id="protected-area" style="display: none; margin-bottom: 20px;">
+            <input type="text" id="extract-code" placeholder="请输入4位提取码" maxlength="4" autocomplete="off">
+        </div>
+        
+        <button id="download-btn" onclick="verifyAndDownload()">下载文件</button>
+        <div id="error-msg"></div>
     </div>
 
     <script>
-        let currentFileId = null;
-        let currentFileName = null;
-        let shareType = null;
-        let shareCode = null;
-        let isPreviewVisible = false;
-        let isProtected = false;  // 新增变量，用于区分是否是受保护的文件
-        const sessionId = localStorage.getItem('sessionId');
+        // 1. 从 URL 路径中提取 shareId (例如 /s/aB3x9Y -> aB3x9Y)
+        const shareId = window.location.pathname.split('/').pop();
+        let shareType = 'public';
 
-        // 初始化视频元素的事件监听器
-        function initVideoElement(videoElement) {
-            console.warn("初始化视频元素");
-            if (!videoElement) return;
-            
-            // 移除可能存在的旧事件监听器
-            videoElement.removeEventListener('seeking', videoElement.seekingHandler);
-            videoElement.removeEventListener('seeked', videoElement.seekedHandler);
-            videoElement.removeEventListener('loadedmetadata', videoElement.loadedmetadataHandler);
-            videoElement.removeEventListener('play', videoElement.playHandler);
-            videoElement.removeEventListener('error', videoElement.errorHandler);
-        }
-
-        // 页面加载时获取分享类型
-        window.onload = function() {
-            // 从URL中获取分享码
-            shareCode = window.location.pathname.split('/').pop();
-            
-            // 从URL中获取提取码（如果有）
-            const urlParams = new URLSearchParams(window.location.search);
-            const extractCode = urlParams.get('extract_code');
-            
-            // 显示加载状态
-            showLoading();
-            
-            // 获取分享信息
-            fetchShareInfo().then(() => {
-                if (extractCode) {
-                    document.getElementById('share-code').value = extractCode;
-                    verifyShareCode();
-                }
-            });
-        };
-
-        function fetchShareInfo() {
-            return fetch(`/share/info/${shareCode}`)
-                .then(response => {
-                    if (!response.ok) {
-                        if (response.status === 403) {
-                            // 如果是403错误，显示提取码输入界面
-                            hideLoading();
-                            document.getElementById('public-share').style.display = 'none';
-                            document.getElementById('protected-share').style.display = 'block';
-                            return;
-                        }
-                        throw new Error('Network response was not ok');
-                    }
-                    return response.json();
-                })
-                .then(data => {
-                    hideLoading();
-                    if (data.code === 0) {
-                        shareType = data.shareType;
-                        isProtected = shareType === 'protected';
-                        if (isProtected) {
-                            document.getElementById('public-share').style.display = 'none';
-                            document.getElementById('protected-share').style.display = 'block';
-                        } else {
-                            document.getElementById('public-share').style.display = 'block';
-                            document.getElementById('protected-share').style.display = 'none';
-                            showFileInfo(data.file);
-                        }
-                    } else {
-                        showError(data.message || '分享链接无效或已过期');
-                    }
-                })
-                .catch(error => {
-                    hideLoading();
-                    console.error('获取分享信息失败:', error);
-                    showError('请输入提取码');
-                });
-        }
-
-        function verifyShareCode() {
-            const extractCode = document.getElementById('share-code').value.trim();
-            if (!extractCode) {
-                showError('请输入提取码');
-                return;
-            }
-
-            showLoading();
-            fetch(`/share/info/${shareCode}?extract_code=${extractCode}`)
-                .then(response => response.json())
-                .then(data => {
-                    hideLoading();
-                    if (data.code === 0) {
-                        hideError();
-                        shareType = data.shareType;
-                        isProtected = true;
-                        showFileInfo(data.file);
-                        document.getElementById('protected-file-info').style.display = 'block';
-                    } else {
-                        showError(data.message || '提取码错误');
-                    }
-                })
-                .catch(error => {
-                    hideLoading();
-                    console.error('验证提取码失败:', error);
-                    showError('验证提取码失败，请稍后重试');
-                });
-        }
-
-        function showFileInfo(file) {
-            // 根据是否是受保护的文件选择不同的元素
-            const prefix = isProtected ? 'protected-' : '';
-            const fileInfo = document.getElementById(`${prefix}file-info`);
-            const previewContainer = document.getElementById(`${prefix}preview-container`);
-            const videoPreview = document.getElementById(`${prefix}video-preview`);
-            const imagePreview = document.getElementById(`${prefix}image-preview`);
-
-            // 设置文件信息
-            document.getElementById(`${prefix}file-name`).textContent = file.originalName;
-            document.getElementById(`${prefix}file-size`).textContent = formatSize(file.size);
-            document.getElementById(`${prefix}share-time`).textContent = formatDate(file.shareTime);
-            document.getElementById(`${prefix}expire-time`).textContent = file.expireTime ? 
-                formatDate(file.expireTime) : '永不过期';
-            
-            currentFileId = file.id;
-            currentFileName = file.name;
-            fileInfo.style.display = 'block';
-
-            // 检查文件类型并显示预览
-            const fileExtension = file.originalName.split('.').pop().toLowerCase();
-            const isVideo = fileExtension === 'mp4';
-            const isImage = ['jpg', 'jpeg', 'png', 'gif', 'webp'].includes(fileExtension);
-
-            if (isVideo || isImage) {
-                previewContainer.style.display = 'block';
-                if (isVideo) {
-                    const videoElement = videoPreview.querySelector('video');
-                    if (videoElement) {
-                        // 先隐藏图片预览
-                        imagePreview.style.display = 'none';
-                        
-                        // 设置视频属性
-                        // 移除autoplay以避免立即加载，让用户手动点击播放
-                        videoElement.preload = 'metadata'; // 只预加载元数据
-                        videoElement.type = 'video/mp4';
-                        videoElement.crossOrigin = 'anonymous';
-                        videoElement.removeAttribute('data-played'); // 清除播放状态
-                        videoElement.removeAttribute('data-errorRetried'); // 清除错误重试状态
-                        
-                        // 先初始化事件监听器
-                        initVideoElement(videoElement);
-                        
-                        let videoUrl = `/share/download/${currentFileName}?code=${shareCode}&sessionId=${sessionId}`;
-                        if(isProtected){
-                            const extractCode = document.getElementById('share-code').value.trim();
-                            videoUrl += `&extract_code=${extractCode}`;
-                        }
-                        
-                        // 设置视频源，这将开始加载元数据
-                        videoElement.src = videoUrl;
-                        videoPreview.style.display = 'block';
-                    }
-                } else if (isImage) {
-                    const imgElement = imagePreview.querySelector('img');
-                    let imgUrl = `/share/download/${currentFileName}?code=${shareCode}`;
-                    if (isProtected) {
-                        const extractCode = document.getElementById('share-code').value.trim();
-                        imgUrl += `&extract_code=${extractCode}`;
-                    }
-                    imgElement.src = imgUrl;
-                    videoPreview.style.display = 'none';
-                    imagePreview.style.display = 'block';
-                }
-            } else {
-                previewContainer.style.display = 'none';
-            }
-        }
-
-        function showError(message) {
-            const errorDiv = document.getElementById('error-message');
-            errorDiv.textContent = message;
-            errorDiv.style.display = 'block';
-        }
-
-        function hideError() {
-            document.getElementById('error-message').style.display = 'none';
-        }
-
-        function showLoading() {
-            document.getElementById('loading').style.display = 'block';
-            document.getElementById('submit-button').disabled = true;
-        }
-
-        function hideLoading() {
-            document.getElementById('loading').style.display = 'none';
-            document.getElementById('submit-button').disabled = false;
-        }
-
-        function formatSize(bytes) {
-            const units = ['B', 'KB', 'MB', 'GB'];
-            let size = bytes;
-            let unitIndex = 0;
-            while (size >= 1024 && unitIndex < units.length - 1) {
-                size /= 1024;
-                unitIndex++;
-            }
-            return size.toFixed(2) + ' ' + units[unitIndex];
-        }
-
-        function formatDate(dateStr) {
-            if (!dateStr) return '未知';
-            // 处理MySQL返回的时间格式：YYYY-MM-DD HH:mm:ss
-            const date = new Date(dateStr.replace(' ', 'T') + 'Z');
-            return date.toLocaleString('zh-CN', {
-                year: 'numeric',
-                month: '2-digit',
-                day: '2-digit',
-                hour: '2-digit',
-                minute: '2-digit',
-                second: '2-digit',
-                hour12: false
-            });
-        }
-
-        async function downloadFile() {
+        // 2. 页面加载时，向 Master 获取文件信息
+        window.onload = async function() {
             try {
-                if (!currentFileName) {
-                    showError('文件信息不完整');
+                const res = await fetch(`/share/info?share_id=${shareId}`);
+                const result = await res.json();
+                
+                if (result.code !== 0) {
+                    showFatalError(result.message || "分享链接无效或已过期");
                     return;
                 }
 
-                // 构建下载URL
-                let downloadUrl = `/share/download/${currentFileName}`;
+                const data = result.data;
+                shareType = data.shareType;
                 
-                // 如果是受保护的文件，需要添加提取码
+                // 渲染 UI
+                document.getElementById('file-name').textContent = data.filename;
+                document.getElementById('sharer-name').textContent = data.sharer;
+                document.getElementById('file-size').textContent = formatSize(data.fileSize);
+                
                 if (shareType === 'protected') {
-                    const extractCode = document.getElementById('share-code').value.trim();
-                    if (!extractCode) {
-                        showError('请先输入提取码');
-                        return;
-                    }
-                    downloadUrl += `?code=${shareCode}&extract_code=${extractCode}`;
-                } else {
-                    downloadUrl += `?code=${shareCode}`;
+                    document.getElementById('protected-area').style.display = 'block';
+                    document.getElementById('download-btn').textContent = '提取文件';
                 }
 
-                downloadUrl += `&sessionId=${sessionId}`;
+                // 切换卡片显示
+                document.getElementById('loading-card').style.display = 'none';
+                document.getElementById('main-card').style.display = 'block';
+            } catch (e) {
+                showFatalError("网络错误，无法连接到服务器");
+            }
+        };
 
-                // 创建下载链接
-                const link = document.createElement('a');
-                link.href = downloadUrl;
-                link.download = currentFileName;
-                document.body.appendChild(link);
-                link.click();
-                document.body.removeChild(link);
-            } catch (error) {
-                console.error('下载失败:', error);
-                showError('下载失败，请重试');
+        // 3. 验证提取码并获取 DataNode 下载地址
+        async function verifyAndDownload() {
+            const btn = document.getElementById('download-btn');
+            const errorMsg = document.getElementById('error-msg');
+            let extractCode = '';
+
+            // 如果是加密分享，校验输入
+            if (shareType === 'protected') {
+                extractCode = document.getElementById('extract-code').value.trim();
+                if (extractCode.length !== 4) {
+                    showError('请输入 4 位提取码');
+                    return;
+                }
+            }
+
+            // 锁定按钮，防止重复点击
+            btn.disabled = true;
+            btn.textContent = '正在获取下载地址...';
+            errorMsg.style.display = 'none';
+
+            try {
+                // 向 Master 验证密码并换取 Token
+                const res = await fetch('/api/share/verify', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ shareId: shareId, extractCode: extractCode })
+                });
+                const result = await res.json();
+
+                if (result.code !== 0) {
+                    showError(result.message);
+                    btn.disabled = false;
+                    btn.textContent = shareType === 'protected' ? '提取文件' : '下载文件';
+                    return;
+                }
+
+                // 🌟 核心：拿到 DataNode 地址和专属 Token，直接触发浏览器下载！
+                const downloadUrl = `${result.data.downloadUrl}?token=${result.data.token}`;
+                
+                btn.textContent = '开始下载...';
+                
+                // 创建一个隐藏的 a 标签触发下载
+                const a = document.createElement('a');
+                a.href = downloadUrl;
+                // 注意：跨域情况下 a.download 可能失效，主要靠后端的 Content-Disposition 头来指定文件名
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                
+                // 3秒后恢复按钮状态
+                setTimeout(() => { 
+                    btn.disabled = false; 
+                    btn.textContent = shareType === 'protected' ? '提取文件' : '下载文件';
+                }, 3000);
+
+            } catch (e) {
+                showError('网络错误，请稍后重试');
+                btn.disabled = false;
+                btn.textContent = shareType === 'protected' ? '提取文件' : '下载文件';
             }
         }
 
-        // 添加页面卸载事件处理
-        window.addEventListener('beforeunload', function() {
-            // 关闭视频
-            const videoPlayer = document.getElementById('video-player');
-            const videoElement = document.getElementById('video-element');
-            if (videoElement) {
-                videoElement.pause();
-                videoElement.src = '';
-            }
-        });
+        // 辅助函数：格式化文件大小
+        function formatSize(bytes) {
+            if (bytes === 0) return '0 B';
+            const k = 1024, sizes = ['B', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+        }
 
-        // 添加页面可见性变化事件处理
-        document.addEventListener('visibilitychange', function() {
-            if (document.hidden) {
-                // 关闭视频
-                const videoPlayer = document.getElementById('video-player');
-                const videoElement = document.getElementById('video-element');
-                if (videoElement) {
-                    videoElement.pause();
-                    videoElement.src = '';
-                }
-            }
-        });
+        // 辅助函数：显示普通错误
+        function showError(msg) {
+            const errorDiv = document.getElementById('error-msg');
+            errorDiv.textContent = msg;
+            errorDiv.style.display = 'block';
+        }
+
+        // 辅助函数：显示致命错误（如链接失效）
+        function showFatalError(msg) {
+            const card = document.getElementById('loading-card');
+            card.innerHTML = `
+                <div style="font-size: 40px; color: #f44336; margin-bottom: 15px;">⚠️</div>
+                <h3 style="color: #333; margin:0;">${msg}</h3>
+                <p style="color: #666; margin-top: 15px; font-size: 0.9em;">请检查链接是否正确，或联系分享者重新分享。</p>
+            `;
+        }
     </script>
 </body>
-</html> 
+</html>
