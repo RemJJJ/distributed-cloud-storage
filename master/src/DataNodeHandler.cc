@@ -1,6 +1,12 @@
 #include "DataNodeHandler.h"
+#include "NodeManager.h"
+#include "db/MySQLPool.h"
 #include "db/MySQLStatement.h"
+#include "net/HttpRequest.h"
 #include "net/HttpResponse.h"
+#include <exception>
+#include <string>
+#include <unordered_set>
 
 void DataNodeHandler::sendError(std::shared_ptr<fn::HttpResponse> &resp,
                                 const std::string &message,
@@ -52,8 +58,12 @@ bool DataNodeHandler::handleRegisterNode(
         }
         std::string node_ip = json["ip"].get<std::string>();
         uint16_t node_port = json["port"].get<uint16_t>();
+
+        // 提取DataNode传来的老ID
+        std::string reported_node_id = json.value("node_id", "");
         fn::InetAddress addr(node_ip, node_port);
-        auto RegisterResponse = NodeManager::instance().registerNode(addr);
+        auto RegisterResponse =
+            NodeManager::instance().registerNode(reported_node_id, addr);
 
         if (RegisterResponse.node_id.empty()) {
             sendError(resp, "Failed to generate token",
@@ -249,6 +259,117 @@ bool DataNodeHandler::handleUploadFinishNotify(
     } catch (const std::exception &e) {
         LOG_ERROR << "处理通知失败: " << e.what();
         sendError(resp, "服务器内部错误",
+                  fn::HttpResponse::k500InternalServerError, conn);
+        return true;
+    }
+}
+
+bool DataNodeHandler::handleReportFiles(
+    const fn::TcpConnectionPtr &conn, fn::HttpRequest &req,
+    std::shared_ptr<fn::HttpResponse> &resp) {
+    if (req.method() != fn::HttpRequest::kPost ||
+        req.path() != "/report_files") {
+        sendError(resp, "404 Not Found", fn::HttpResponse::k404NotFound, conn);
+        return true;
+    }
+
+    LOG_INFO << "Receive files report from datanode";
+    try {
+        std::string authHeader = req.getHeader("Authorization");
+        if (authHeader.empty() || authHeader.substr(0, 7) != "Bearer ") {
+            sendError(resp, "未授权", fn::HttpResponse::k401Unauthorized, conn);
+            return true;
+        }
+        std::string tokenNodeId =
+            TokenManager::instance().verifyNodeToken(authHeader.substr(7));
+        if (tokenNodeId.empty()) {
+            sendError(resp, "Token invalid",
+                      fileserver::net::HttpResponse::k401Unauthorized, conn);
+            return true;
+        }
+
+        // 解析汇报的JSON
+        json reqJson = json::parse(req.body());
+        std::string reqNodeId = reqJson.value("node_id", "");
+        if (tokenNodeId != reqNodeId) {
+            sendError(resp, "Identification not matched",
+                      fn::HttpResponse::k403Forbidden, conn);
+            return true;
+        }
+
+        std::vector<std::string> reportedFiles =
+            reqJson.value("files", std::vector<std::string>());
+
+        std::unordered_set<std::string> physicalFiles(reportedFiles.begin(),
+                                                      reportedFiles.end());
+
+        // 数据库对账
+        auto mysql = db::MySQLPool::instance().getConnection();
+        if (!mysql) {
+            sendError(resp, "DB connection failed",
+                      fn::HttpResponse::k500InternalServerError, conn);
+            return true;
+        }
+
+        std::string querySql =
+            "SELECT id, filename, status FROM files WHERE nodes_id = ?";
+        db::MySQLStatement queryStmt(*mysql, querySql);
+        queryStmt.bindString(reqNodeId);
+
+        if (queryStmt.execute()) {
+            auto rs = queryStmt.getResultSet();
+            int lostCount = 0;
+            int recoveredCount = 0;
+
+            // 更新语句
+            std::string markLostSql =
+                "UPDATE files SET status = 'failed' WHERE id = ?";
+            std::string markSuccessSql =
+                "UPDATE files SET status = 'success' WHERE id = ?";
+
+            while (rs->next()) {
+                int fileId = rs->getInt(0);
+                std::string dbFilename = rs->getString(1);
+                std::string dbStatus = rs->getString(2);
+
+                if (physicalFiles.find(dbFilename) == physicalFiles.end()) {
+                    // 数据库有，datanode没有 ->文件丢失
+                    if (dbStatus == "success" || dbStatus == "uploading") {
+                        db::MySQLStatement updateStmt(*mysql, markLostSql);
+                        updateStmt.bindInt(fileId);
+                        updateStmt.execute();
+                        lostCount++;
+                        LOG_WARN
+                            << "Found lost files, set status failed. FileID: "
+                            << fileId;
+                    }
+                } else {
+                    // datanode有，数据库有
+                    if (dbStatus == "uploading") {
+                        db::MySQLStatement updateStmt(*mysql, markSuccessSql);
+                        updateStmt.bindInt(fileId);
+                        updateStmt.execute();
+                        recoveredCount++;
+                        LOG_INFO << "Fix uploading status to success, FileID: "
+                                 << fileId;
+                    }
+                }
+            }
+            LOG_INFO << "DataNode " << reqNodeId
+                     << " reconciliation complete. Lost: " << lostCount
+                     << ". Fixed: " << recoveredCount;
+        }
+
+        json respJson = {{"code", 0}, {"message", "Report handle complete"}};
+        std::string bodyStr = respJson.dump();
+        resp->setStatusCode(fileserver::net::HttpResponse::k200Ok);
+        resp->setContentType("application/json");
+        resp->setBody(bodyStr);
+        resp->addHeader("Content-Length", std::to_string(bodyStr.size()));
+        return true;
+    } catch (const std::exception &e) {
+        LOG_ERROR << "Handle report error: " << e.what();
+        sendError(resp, "Internal Server Error",
                   fn::HttpResponse::k500InternalServerError, conn);
         return true;
     }

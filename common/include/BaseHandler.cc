@@ -65,6 +65,13 @@ void BaseHandler::addRoute(const std::string &path, HttpRequest::Method method,
     routes_.emplace_back(pattern, std::vector<std::string>(), handler, method);
 }
 
+// 带参数的路由
+void BaseHandler::addRoute(const std::string &pattern,
+                           HttpRequest::Method method, RequestHandler handler,
+                           const std::vector<std::string> &paramNames) {
+    routes_.emplace_back(pattern, paramNames, handler, method);
+}
+
 std::string BaseHandler::urlDecode(const std::string &encoded) {
     std::string result;
     char ch;

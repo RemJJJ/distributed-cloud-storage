@@ -47,6 +47,10 @@
             height: 100%; 
             background-color: #4CAF50; 
             transition: width 0.3s;
+            white-space: nowrap;      /* 强制文字不换行 */
+            overflow: visible;        /* 允许文字溢出进度条显示 */
+            text-align: center;       /* 文字居中 */
+            line-height: 20px;        /* 假设你的进度条高度是 20px */
         }
         .file-item { 
             padding: 20px;
@@ -898,16 +902,26 @@
         
         const xhr = new XMLHttpRequest();
         xhr.open('POST', uploadUrl, true); // 注意：这里用的是 Master 返回的动态 URL！
+
+        xhr.timout = 5000;
+
+        xhr.ontimeout = function(){
+            console.error("连接存储节点超时！");
+            alert("存储节点暂时无响应，请稍后重试。");
+            progress.style.display = 'none';
+            progressBar.style.width = '0%';
+        };
         
         // ⚠️ 极其重要：这里带的是 Master 刚刚签发的专属 uploadToken，而不是用户的登录 Token！
         xhr.setRequestHeader('Authorization', 'Bearer ' + uploadToken); 
         // 如果你的 DataNode 还需要原文件名，可以保留这个头，否则可以删掉
         xhr.setRequestHeader('X-File-Name', encodeURIComponent(file.name));
+        xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
 
         // 监听上传进度
         xhr.upload.onprogress = function(e) {
             if (e.lengthComputable) {
-                const percentComplete = Math.round((e.loaded / e.total) * 100);
+                const percentComplete = 10 + Math.round((e.loaded / e.total) * 90);
                 progressBar.style.width = percentComplete + '%';
                 progressBar.textContent = percentComplete + '%';
             }
@@ -941,10 +955,8 @@
             progress.style.display = 'none';
         };
 
-        // 组装表单数据并发送给 DataNode
-        const formData = new FormData();
-        formData.append('file', file);
-        xhr.send(formData);
+        xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
+        xhr.send(file); // 浏览器会自动将文件以纯二进制流形式发出
 
     } catch (error) {
         alert('操作失败: ' + error.message);
@@ -1117,154 +1129,177 @@
         return size.toFixed(2) + ' ' + units[unitIndex];
     }
 
-    function playVideo(filename) {
-        if (!sessionId) {
+    async function playVideo(filename) {
+        const token = localStorage.getItem('token'); // 确保获取到 token
+        if (!token) {
             alert('请先登录');
             return;
         }
 
-        const videoPlayer = document.getElementById('video-player');
-        const videoElement = document.getElementById('video-element');
-        const overlay = document.getElementById('overlay');
-        const closeButton = document.getElementById('video-close-button');
-        
-        // 显示播放器和遮罩层
-        videoPlayer.style.display = 'block';
-        overlay.style.display = 'block';
-        
-        // 准备视频URL
-        let videoUrl = `/download/${filename}?sessionId=${sessionId}`;
-        
-        // 设置视频属性
-        videoElement.preload = 'metadata'; // 只预加载元数据
-        videoElement.autoplay = true;
-        
-        // 添加元数据加载完成事件
-        videoElement.addEventListener('loadedmetadata', function() {
-            console.log('视频元数据已加载，时长:', videoElement.duration);
+        try{
+            const url = `/download/${encodeURIComponent(filename)}`;
             
-            // 保存原始视频URL和时长信息
-            const originalSrc = videoElement.src;
-            videoElement.dataset.originalSrc = originalSrc;
-            videoElement.dataset.duration = videoElement.duration;
+            const res = await fetch(url, {
+                headers: { 'Authorization': 'Bearer ' + token }
+            });
+            const result = await res.json();
+            if (result.code !== 0) throw new Error(result.message);
+            // 构造真正的 DataNode 播放 URL
+            const videoUrl = `${result.data.downloadUrl}?token=${result.data.token}`;
             
-            // 设置目标缓冲时间（秒）
-            const targetBufferTime = 5; // 目标缓冲5秒钟的数据
-            const minBufferPercent = 0.1; // 或者至少缓冲视频总时长的10%
-            const minBufferSeconds = Math.min(targetBufferTime, videoElement.duration * minBufferPercent);
+
+            const videoPlayer = document.getElementById('video-player');
+            const videoElement = document.getElementById('video-element');
+            const overlay = document.getElementById('overlay');
+            const closeButton = document.getElementById('video-close-button');
             
-            console.log(`元数据已加载，开始缓冲初始数据(目标: ${minBufferSeconds.toFixed(2)}秒)...`);
+            // 显示播放器和遮罩层
+            videoPlayer.style.display = 'block';
+            overlay.style.display = 'block';
             
-            // 设置缓冲检查定时器
-            const bufferCheckInterval = setInterval(() => {
-                // 如果用户已经开始播放，不中断连接
-                if (videoElement.hasAttribute('data-played')) {
-                    clearInterval(bufferCheckInterval);
-                    return;
-                }
+            // 设置视频属性
+            videoElement.preload = 'metadata'; // 只预加载元数据
+            videoElement.autoplay = true;
+
+            // 处理DataNode宕机连不上的情况
+            videoElement.onerror = function(){
+                console.error('视频加载失败，存储节点可能已离线');
+                alert('视频加载失败：存储节点暂时无响应，请稍后重试。');
+                closeVideo();
+            };
+            
+            // 添加元数据加载完成事件
+            videoElement.addEventListener('loadedmetadata', function() {
+                console.log('视频元数据已加载，时长:', videoElement.duration);
                 
-                // 检查缓冲进度
-                if (videoElement.buffered.length > 0) {
-                    const bufferedEnd = videoElement.buffered.end(0);
-                    console.log(`当前已缓冲: ${bufferedEnd.toFixed(2)}秒`);
-                    
-                    // 如果已经缓冲了足够的数据，中断连接
-                    if (bufferedEnd >= minBufferSeconds) {
+                // 保存原始视频URL和时长信息
+                const originalSrc = videoElement.src;
+                videoElement.dataset.originalSrc = originalSrc;
+                videoElement.dataset.duration = videoElement.duration;
+                
+                // 设置目标缓冲时间（秒）
+                const targetBufferTime = 5; // 目标缓冲5秒钟的数据
+                const minBufferPercent = 0.1; // 或者至少缓冲视频总时长的10%
+                const minBufferSeconds = Math.min(targetBufferTime, videoElement.duration * minBufferPercent);
+                
+                console.log(`元数据已加载，开始缓冲初始数据(目标: ${minBufferSeconds.toFixed(2)}秒)...`);
+                
+                // 设置缓冲检查定时器
+                const bufferCheckInterval = setInterval(() => {
+                    // 如果用户已经开始播放，不中断连接
+                    if (videoElement.hasAttribute('data-played')) {
                         clearInterval(bufferCheckInterval);
-                        console.log(`已缓冲足够数据(${bufferedEnd.toFixed(2)}秒)，中断初始连接`);
-                        
-                        videoElement.pause();
-                        videoElement.removeAttribute('src');
-                        videoElement.load(); // 终止网络请求
+                        return;
                     }
-                }
-            }, 500); // 每500ms检查一次缓冲状态
-            
-            // 设置最大等待时间，避免无限等待
-            setTimeout(() => {
-                if (!videoElement.hasAttribute('data-played')) {
-                    clearInterval(bufferCheckInterval);
                     
-                    // 即使没有达到理想的缓冲量，也进行检查
+                    // 检查缓冲进度
                     if (videoElement.buffered.length > 0) {
                         const bufferedEnd = videoElement.buffered.end(0);
-                        console.log(`达到最大等待时间，当前已缓冲: ${bufferedEnd.toFixed(2)}秒`);
+                        console.log(`当前已缓冲: ${bufferedEnd.toFixed(2)}秒`);
                         
-                        // 如果至少有1秒的数据，仍然中断连接
-                        if (bufferedEnd >= 1) {
-                            console.log(`虽未达到目标缓冲量，但已有${bufferedEnd.toFixed(2)}秒数据，中断连接`);
+                        // 如果已经缓冲了足够的数据，中断连接
+                        if (bufferedEnd >= minBufferSeconds) {
+                            clearInterval(bufferCheckInterval);
+                            console.log(`已缓冲足够数据(${bufferedEnd.toFixed(2)}秒)，中断初始连接`);
+                            
                             videoElement.pause();
                             videoElement.removeAttribute('src');
-                            videoElement.load();
-                        } else {
-                            console.log(`缓冲量不足(${bufferedEnd.toFixed(2)}秒)，继续保持连接`);
+                            videoElement.load(); // 终止网络请求
                         }
-                    } else {
-                        console.log('缓冲异常，未检测到有效缓冲区');
+                    }
+                }, 500); // 每500ms检查一次缓冲状态
+                
+                // 设置最大等待时间，避免无限等待
+                setTimeout(() => {
+                    if (!videoElement.hasAttribute('data-played')) {
+                        clearInterval(bufferCheckInterval);
+                        
+                        // 即使没有达到理想的缓冲量，也进行检查
+                        if (videoElement.buffered.length > 0) {
+                            const bufferedEnd = videoElement.buffered.end(0);
+                            console.log(`达到最大等待时间，当前已缓冲: ${bufferedEnd.toFixed(2)}秒`);
+                            
+                            // 如果至少有1秒的数据，仍然中断连接
+                            if (bufferedEnd >= 1) {
+                                console.log(`虽未达到目标缓冲量，但已有${bufferedEnd.toFixed(2)}秒数据，中断连接`);
+                                videoElement.pause();
+                                videoElement.removeAttribute('src');
+                                videoElement.load();
+                            } else {
+                                console.log(`缓冲量不足(${bufferedEnd.toFixed(2)}秒)，继续保持连接`);
+                            }
+                        } else {
+                            console.log('缓冲异常，未检测到有效缓冲区');
+                        }
+                    }
+                }, 10000); // 最多等待10秒
+            });
+            
+            // 添加播放事件，确保视频播放时源已设置
+            videoElement.addEventListener('play', function onFirstPlay() {
+                // 标记视频已经开始播放
+                videoElement.setAttribute('data-played', 'true');
+                
+                // 仅在首次播放时执行
+                if (!videoElement.hasAttribute('data-playing')) {
+                    console.log('首次播放，重新加载视频源');
+                    videoElement.setAttribute('data-playing', 'true');
+                    
+                    // 如果视频源不存在，但有保存的原始源，重新加载源
+                    if (!videoElement.src && videoElement.dataset.originalSrc) {
+                        videoElement.src = videoElement.dataset.originalSrc;
                     }
                 }
-            }, 10000); // 最多等待10秒
-        });
-        
-        // 添加播放事件，确保视频播放时源已设置
-        videoElement.addEventListener('play', function onFirstPlay() {
-            // 标记视频已经开始播放
-            videoElement.setAttribute('data-played', 'true');
+            });
             
-            // 仅在首次播放时执行
-            if (!videoElement.hasAttribute('data-playing')) {
-                console.log('首次播放，重新加载视频源');
-                videoElement.setAttribute('data-playing', 'true');
+            // 添加seeking事件，确保拖动进度条时能正常工作
+            videoElement.addEventListener('seeking', function() {
+                console.log('seeking to:', videoElement.currentTime);
                 
-                // 如果视频源不存在，但有保存的原始源，重新加载源
+                // 确保视频源已加载
                 if (!videoElement.src && videoElement.dataset.originalSrc) {
+                    console.log('拖动进度条时检测到视频源未加载，重新加载源');
                     videoElement.src = videoElement.dataset.originalSrc;
+                    videoElement.setAttribute('data-played', 'true');
                 }
-            }
-        });
-        
-        // 添加seeking事件，确保拖动进度条时能正常工作
-        videoElement.addEventListener('seeking', function() {
-            console.log('seeking to:', videoElement.currentTime);
+            });
             
-            // 确保视频源已加载
-            if (!videoElement.src && videoElement.dataset.originalSrc) {
-                console.log('拖动进度条时检测到视频源未加载，重新加载源');
-                videoElement.src = videoElement.dataset.originalSrc;
-                videoElement.setAttribute('data-played', 'true');
-            }
-        });
-        
-        // 设置视频源，这将开始加载元数据
-        videoElement.src = videoUrl;
-        
-        // 设置关闭按钮事件
-        closeButton.onclick = function() {
-            closeVideo();
-        };
-        
-        // 点击遮罩层也可关闭视频
-        overlay.onclick = function() {
-            closeVideo();
-        };
-        
-        // 添加ESC键关闭功能
-        const escHandler = function(event) {
-            if (event.key === 'Escape') {
+            // 设置视频源，这将开始加载元数据
+            videoElement.src = videoUrl;
+            
+            // 设置关闭按钮事件
+            closeButton.onclick = function() {
                 closeVideo();
-            }
-        };
-        document.addEventListener('keydown', escHandler);
-        
-        // 清理函数
-        videoElement.cleanup = function() {
-            document.removeEventListener('keydown', escHandler);
+            };
             
-            // 清理所有数据
-            delete videoElement.dataset.originalSrc;
-            delete videoElement.dataset.duration;
-            delete videoElement.dataset.played;
-        };
+            // 点击遮罩层也可关闭视频
+            overlay.onclick = function() {
+                closeVideo();
+            };
+            
+            // 添加ESC键关闭功能
+            const escHandler = function(event) {
+                if (event.key === 'Escape') {
+                    closeVideo();
+                }
+            };
+            document.addEventListener('keydown', escHandler);
+            
+            // 清理函数
+            videoElement.cleanup = function() {
+                document.removeEventListener('keydown', escHandler);
+                
+                // 清理所有数据
+                delete videoElement.dataset.originalSrc;
+                delete videoElement.dataset.duration;
+                delete videoElement.dataset.played;
+
+                // 清理onerror时间
+                videoElement.onerror = null;
+            };
+        }catch (err){
+            alert("无法播放视频: " + err.message);
+        }
     }
 
     function closeVideo() {

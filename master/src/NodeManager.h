@@ -36,14 +36,14 @@ class NodeManager {
 
     ///@brief 注册节点
     TokenManager::nodeRegisterResponse
-    registerNode(const fn::InetAddress &addr);
+    registerNode(const std::string &reported_node_id,
+                 const fn::InetAddress &addr);
 
     ///@brief 更新心跳
     void updateHeartbeat(const std::string &node_id,
                          const fn::InetAddress &newAddr);
 
-    ///@brief 启动超时检测定时器
-    // 【新增】启动超时检测定时器（在 Master 启动时调用一次）
+    ///@brief 启动超时检测定时器（在 Master 启动时调用一次）
     void startTimeoutChecker(fn::EventLoop *loop, double interval = 5.0);
 
     ///@brief 获取一个活着的节点

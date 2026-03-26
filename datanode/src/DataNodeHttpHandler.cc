@@ -77,6 +77,11 @@ void DataNodeHttpHandler::initRoutes() {
                     std::shared_ptr<HttpResponse> &resp) {
                  return handleFileUpload(conn, req, resp);
              });
+    addRoute("/api/datanode/download", HttpRequest::kGet,
+             [this](const TcpConnectionPtr &conn, HttpRequest &req,
+                    std::shared_ptr<HttpResponse> &resp) {
+                 return handleFileDownload(conn, req, resp);
+             });
 }
 
 void DataNodeHttpHandler::onConnection(const TcpConnectionPtr &conn) {
@@ -97,9 +102,6 @@ void DataNodeHttpHandler::onConnection(const TcpConnectionPtr &conn) {
         conn->setContext(std::shared_ptr<void>());
     }
 }
-
-/// TODO:
-bool DataNodeHttpHandler::validateToken(const std::string &token) {}
 
 bool DataNodeHttpHandler::handleFileUpload(
     const TcpConnectionPtr &conn, HttpRequest &req,
@@ -157,195 +159,36 @@ bool DataNodeHttpHandler::handleFileUpload(
         return true;
     }
     LOG_INFO << "body.size() = " << req.body().size();
+
     // 尝试获取已经存在的上传上下文
     std::shared_ptr<FileUploadContext> uploadContext =
         httpContext->getContext<FileUploadContext>();
 
     if (!uploadContext) {
-        /// 解析 multipart/form-data 边界
-        std::string contentType = req.getHeader("Content-Type");
-        if (contentType.empty()) {
-            sendError(resp, "Content-Type header is missing",
-                      HttpResponse::k400BadRequest, conn);
-            return true;
-        }
-        std::regex boundaryRegex("boundary=(.+)$");
-        std::smatch matches;
-        if (!std::regex_search(contentType, matches, boundaryRegex)) {
-            sendError(resp, "Invalid Content-Type",
-                      HttpResponse::k400BadRequest, conn);
-            return true;
-        }
-        std::string boundary = "--" + matches[1].str();
-        LOG_INFO << "Boundary: " << boundary;
-
         try {
-
-            // 创建存储
-            auto localStorage = std::make_shared<LocalFileStorage>();
-
-            // 创建上传上下文
             std::string filePath = uploadDir_ + "/" + serverFilename;
+            auto localStorage = std::make_shared<LocalFileStorage>();
             uploadContext = std::make_shared<FileUploadContext>(
                 fileID, filePath, std::move(localStorage));
-
-            uploadContext->setBoundary(boundary);
             httpContext->setContext(uploadContext);
-
-            // 解析body
-            std::string body = req.body();
-            size_t pos = body.find("\r\n\r\n");
-            if (pos != std::string::npos) {
-                // 跳过头部，获取文件内容
-                pos += 4;
-
-                // 检查是否是结束边界
-                std::string endBoundary = boundary + "--";
-                size_t endPos = body.find(endBoundary);
-                if (endPos != std::string::npos) {
-                    LOG_INFO << "Found end boudnary";
-
-                    // 去掉结束边界前的\r\n
-                    size_t validEnd = endPos;
-                    if (validEnd > pos && body[validEnd - 1] == '\n') {
-                        validEnd--;
-                    }
-                    if (validEnd > pos && body[validEnd - 1] == '\r') {
-                        validEnd--;
-                    }
-                    if (validEnd > pos) {
-                        size_t writeLen = validEnd - pos;
-                        uploadContext->writeData(body.data() + pos, writeLen);
-                        LOG_INFO << "Wrote " << writeLen << " bytes, total: "
-                                 << uploadContext->getTotalBytes();
-                    }
-                    // 找到结束边界， 上传完成
-                    uploadContext->setState(
-                        FileUploadContext::State::kComplete);
-                } else {
-                    // 直接写入从pos开始的所有内容
-                    if (pos < body.size()) {
-                        uploadContext->writeData(body.data() + pos,
-                                                 body.size() - pos);
-                        LOG_INFO << "Wrote " << body.size() - pos
-                                 << " bytes, total: "
-                                 << uploadContext->getTotalBytes();
-                    }
-                    uploadContext->setState(
-                        FileUploadContext::State::kExpectBoundary);
-                }
-            }
-
-            req.setBody(""); // 清空请求体
-            LOG_INFO << "Created upload context for file: " << serverFilename;
-
+            LOG_INFO << "开始接收文件: " << serverFilename;
         } catch (std::exception &e) {
-            LOG_ERROR << "Failed to create upload context: " << e.what();
-            sendError(resp, "Failed to create file",
-                      HttpResponse::k500InternalServerError, conn);
-            return true;
-        }
-    } else {
-        try {
-            // 处理后续数据块
-            std::string body = req.body();
-            if (!body.empty()) {
-                switch (uploadContext->getState()) {
-                case FileUploadContext::State::kExpectBoundary: {
-                    // 检查结束边界
-                    std::string endBoundary =
-                        uploadContext->getBoundary() + "--";
-                    size_t endPos = body.find(endBoundary);
-                    if (endPos != std::string::npos) {
-                        size_t validEnd = endPos;
-                        if (validEnd > 0 && body[validEnd - 1] == '\n') {
-                            validEnd--;
-                        }
-                        if (validEnd > 0 && body[validEnd - 1] == '\r') {
-                            validEnd--;
-                        }
-                        if (validEnd > 0) {
-                            size_t writeLen = validEnd;
-                            uploadContext->writeData(body.data(), writeLen);
-                            LOG_INFO << "Wrote " << writeLen
-                                     << " bytes, total: "
-                                     << uploadContext->getTotalBytes();
-                        }
-                        LOG_INFO << "Found end boundary";
-                        // 找到结束边界，上传完成
-                        uploadContext->setState(
-                            FileUploadContext::State::kComplete);
-                        break;
-                    }
-                    // 检查普通边界
-                    size_t boundaryPos =
-                        body.find(uploadContext->getBoundary());
-                    if (boundaryPos != std::string::npos) {
-                        // 找到新边界
-                        size_t contentStart =
-                            body.find("\r\n\r\n", boundaryPos);
-                        if (contentStart != std::string::npos) {
-                            contentStart += 4;
-                            // 写入边界之前的内容
-                            if (boundaryPos > 0) {
-                                uploadContext->writeData(body.data(),
-                                                         boundaryPos);
-                                LOG_INFO << "Wrote " << boundaryPos
-                                         << " bytes, total: "
-                                         << uploadContext->getTotalBytes();
-                            }
-                            // 更新状态
-                            uploadContext->setState(
-                                FileUploadContext::State::kExpectContent);
-                        }
-                    } else {
-                        // 没有找到边界，写入所有内容
-                        uploadContext->writeData(body.data(), body.size());
-
-                        LOG_INFO << "Wrote " << body.size() << " bytes, total: "
-                                 << uploadContext->getTotalBytes();
-                    }
-                    break;
-                }
-                case FileUploadContext::State::kExpectContent: {
-                    // 检查是否包含下一边界
-                    size_t boundaryPos =
-                        body.find(uploadContext->getBoundary());
-                    if (boundaryPos != std::string ::npos) {
-                        // 写入边界前的内容
-                        uploadContext->writeData(body.data(), boundaryPos);
-                        LOG_INFO << "Wrtoe " << boundaryPos << " bytes, total: "
-                                 << uploadContext->getTotalBytes();
-                        // 更新状态
-                        uploadContext->setState(
-                            FileUploadContext::State::kExpectBoundary);
-                    } else {
-                        // 没有找到边界，写入所有内容
-                        uploadContext->writeData(body.data(), body.size());
-                        LOG_INFO << "Wrote " << body.size() << " bytes, total: "
-                                 << uploadContext->getTotalBytes();
-                    }
-                    break;
-                }
-                case FileUploadContext::State::kComplete: {
-                    // 上传已完成，忽略
-                    break;
-                }
-                default: {
-                    LOG_INFO << "Unknown state: "
-                             << static_cast<uint8_t>(uploadContext->getState());
-                    break;
-                }
-                }
-            }
-        } catch (std::exception &e) {
-            LOG_ERROR << "Error processing data chunk: " << e.what();
-            sendError(resp, "Failed to process data",
+            sendError(resp, "无法创建文件",
                       HttpResponse::k500InternalServerError, conn);
             return true;
         }
     }
-    req.setBody("");
+
+    if (!req.body().empty()) {
+        try {
+            uploadContext->writeData(req.body().data(), req.body().size());
+            req.setBody(""); // 清空内存，防止 OOM
+        } catch (std::exception &e) {
+            sendError(resp, "写入磁盘失败",
+                      HttpResponse::k500InternalServerError, conn);
+            return true;
+        }
+    }
 
     // 检查是否完成
     if (uploadContext->getState() == FileUploadContext::State::kComplete ||
@@ -391,4 +234,88 @@ bool DataNodeHttpHandler::handleFileUpload(
                  << static_cast<uint8_t>(uploadContext->getState());
         return false;
     }
+}
+
+bool DataNodeHttpHandler::handleFileDownload(
+    const TcpConnectionPtr &conn, HttpRequest &req,
+    std::shared_ptr<HttpResponse> &resp) {
+
+    if (req.method() == fileserver::net::HttpRequest::kOptions) {
+        // 处理跨域 (重要：视频播放需要 Range 头，必须在允许列表里)
+        resp->addHeader("Access-Control-Allow-Origin", "*");
+        resp->addHeader("Access-Control-Allow-Headers", "Range, Authorization");
+        resp->addHeader("Access-Control-Expose-Headers",
+                        "Content-Range, Content-Length, Accept-Ranges");
+        return true;
+    }
+
+    // ⚠️ 极其重要：即使是真正的 POST
+    // 响应，也必须带上跨域头，否则前端拿不到响应数据！
+    resp->addHeader("Access-Control-Allow-Origin", "*");
+
+    std::string token = req.getQuery("token");
+    uint64_t file_id;
+    std::string serverFilename;
+    if (!TokenManager::instance().verifyUploadToken(token, file_id,
+                                                    serverFilename)) {
+        sendError(resp, "非法请求", HttpResponse::k403Forbidden, conn);
+        return true;
+    }
+
+    std::string filepath = uploadDir_ + "/" + serverFilename;
+    if (!fs::exists(filepath)) {
+        sendError(resp, "文件丢失", HttpResponse::k404NotFound, conn);
+        return true;
+    }
+
+    uintmax_t fileSize = fs::file_size(filepath);
+
+    std::string rangeHeader = req.getHeader("Range");
+    uintmax_t startPos = 0;
+    uintmax_t endPos = fileSize - 1;
+    bool isRange = false;
+
+    if (!rangeHeader.empty()) {
+        std::regex rangeRegex("bytes=(\\d+)-(\\d*)");
+        std::smatch matches;
+        if (std::regex_search(rangeHeader, matches, rangeRegex)) {
+            startPos = std::stoull(matches[1]);
+            if (!matches[2].str().empty())
+                endPos = std::stoull(matches[2]);
+            isRange = true;
+        }
+    }
+
+    resp->setStatusCode(isRange ? HttpResponse::k206PartialContent
+                                : HttpResponse::k200Ok);
+    resp->addHeader("Accept-Ranges", "bytes");
+    resp->setContentType("video/mp4"); // 简单起见写死，实际应根据后缀判断
+    if (isRange) {
+        resp->addHeader("Content-Range", "bytes " + std::to_string(startPos) +
+                                             "-" + std::to_string(endPos) +
+                                             "/" + std::to_string(fileSize));
+    }
+    resp->addHeader("Content-Length", std::to_string(endPos - startPos + 1));
+
+    auto httpContext =
+        std::static_pointer_cast<HttpContext>(conn->getContext());
+    auto downContext =
+        std::make_shared<FileDownContext>(filepath, serverFilename);
+    downContext->seekTo(startPos);
+    httpContext->setContext(downContext);
+
+    conn->setWriteCompleteCallback(
+        [downContext](const TcpConnectionPtr &connection) {
+            std::string chunk;
+            if (downContext->readNextChunk(chunk)) {
+                connection->send(chunk);
+                return true;
+            } else {
+                // connection->shutdown(); // 视频流通常保持长连接，不建议立刻
+                // shutdown
+                return true;
+            }
+        });
+
+    return true;
 }

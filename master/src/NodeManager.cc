@@ -28,60 +28,70 @@ void NodeManager::init(const std::string &configPath) {
 bool NodeManager::isInitialized() { return instance().initialized_; }
 
 TokenManager::nodeRegisterResponse
-NodeManager::registerNode(const fn::InetAddress &addr) {
-    std::string node_id;
-    std::string token;
-    TokenManager::nodeRegisterResponse nodeToken;
+NodeManager::registerNode(const std::string &reported_node_id,
+                          const fn::InetAddress &addr) {
+    std::string final_node_id;
+
     {
         std::lock_guard<std::mutex> lock(mutex_);
 
-        // 创建或获取节点信息
-        auto iter = nodes_.find(addr.toIpPort());
-        if (iter == nodes_.end()) {
-            auto info = std::make_shared<DataNodeInfo>(addr);
-            nodes_[addr.toIpPort()] = info;
-            node_id = info->id_;
+        // 如果DataNode传来了老ID，并且这个ID看起来合法，就信任它
+        if (!reported_node_id.empty()) {
+            final_node_id = reported_node_id;
+
+            // 如果内存里没有这个老节点的信息，重新建一个
+            if (nodes_.find(final_node_id) == nodes_.end()) {
+                auto info = std::make_shared<DataNodeInfo>(addr);
+                info->id_ = final_node_id;
+                nodes_[final_node_id] = info;
+            } else {
+                // 如果内存里有，更新它的最新IP地址
+                nodes_[final_node_id]->addr_ = addr;
+            }
         } else {
-            node_id = iter->second->id_; // 如果已注册，沿用旧ID
+            // 全新节点
+            auto info = std::make_shared<DataNodeInfo>(addr);
+            final_node_id = info->id_;
+            nodes_[final_node_id] = info;
         }
+
+        // 标记存活
+        nodes_[final_node_id]->isAlive_ = true;
+        nodes_[final_node_id]->lastHeartbeat_ = fileserver::Timestamp::now();
     }
 
-    // 生成Token
+    // 生成token返回
     auto &tm = TokenManager::instance();
-    return tm.generateNodeToken(node_id, addr);
+    return tm.generateNodeToken(final_node_id, addr);
 }
 
 void NodeManager::updateHeartbeat(const std::string &node_id,
                                   const fn::InetAddress &newAddr) {
     std::lock_guard<std::mutex> lock(mutex_);
-    for (auto &pair : nodes_) {
-        if (pair.second->id_ == node_id) {
-            pair.second->lastHeartbeat_ = fileserver::Timestamp::now();
-            pair.second->isAlive_ = true;
-        }
 
-        // 如果地址变了，更新地址
-        if (pair.second->addr_.toIpPort() != newAddr.toIpPort()) {
-            LOG_INFO << "节点地址更新：" << pair.first << " -> "
+    auto it = nodes_.find(node_id);
+    if (it != nodes_.end()) {
+        it->second->lastHeartbeat_ = fileserver::Timestamp::now();
+        it->second->isAlive_ = true;
+
+        // 如果更换了IP或端口，直接更新
+        if (it->second->addr_.toIpPort() != newAddr.toIpPort()) {
+            LOG_INFO << "Address of datanode changed: " << node_id << " -> "
                      << newAddr.toIpPort();
-
-            // 从旧 key 移除，用新 key 存储
-            auto info = pair.second;
-            nodes_.erase(pair.first);
-            nodes_[newAddr.toIpPort()] = info;
+            it->second->addr_ = newAddr;
         }
-        return;
+    } else {
+        LOG_WARN << "Update heartbeat failed: datanode not. node_id="
+                 << node_id;
     }
-    LOG_WARN << "更新心跳失败：节点不存在 node_id=" << node_id;
 }
 
 std::shared_ptr<DataNodeInfo>
 NodeManager::getNodeInfo(const std::string &node_id) {
     std::lock_guard<std::mutex> lock(mutex_);
-    for (auto &node : nodes_) {
-        if (node.second->id_ == node_id) {
-            return node.second;
-        }
+    auto it = nodes_.find(node_id);
+    if (it != nodes_.end()) {
+        return it->second;
     }
     return nullptr;
 }

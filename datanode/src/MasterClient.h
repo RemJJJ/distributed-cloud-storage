@@ -77,6 +77,9 @@ class MasterClient {
     /// @brief 解析JSON Body
     void parseResponseBody(const std::string &body);
 
+    /// @brief 全量扫描本地文件并汇报给Master
+    void reportLocalFiles();
+
     //------成员变量------
     fn::EventLoop *loop_;                   // 绑定loop
     std::unique_ptr<fn::TcpClient> client_; // muduo TcpClient
@@ -99,6 +102,7 @@ class MasterClient {
     std::queue<PendingNotice> pendingNotifications_;
     std::mutex pendingMutex_; // 保护队列的互斥锁
 
+    // 定时器成员
     fn::TimerId tokenRefreshTimerId_;
 
     static constexpr double TOKEN_REFRESH_INTERVAL = 23 * 3600.0;

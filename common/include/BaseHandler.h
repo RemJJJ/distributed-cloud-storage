@@ -37,8 +37,8 @@ class BaseHandler : public std::enable_shared_from_this<BaseHandler> {
         RoutePattern(const std::string &pattern_str,
                      const std::vector<std::string> &param_names,
                      RequestHandler h, HttpRequest::Method m)
-            : pattern(pattern_str), params(param_names), handler(h), method(m) {
-        }
+            : pattern(pattern_str), params(param_names), handler(std::move(h)),
+              method(m) {}
     };
     // 【通用】路由表
     std::vector<RoutePattern> routes_;
@@ -58,6 +58,11 @@ class BaseHandler : public std::enable_shared_from_this<BaseHandler> {
     // 【通用】注册路由
     void addRoute(const std::string &path, HttpRequest::Method method,
                   RequestHandler handler);
+
+    // 带参数的路由
+    void addRoute(const std::string &pattern, HttpRequest::Method method,
+                  RequestHandler handler,
+                  const std::vector<std::string> &paramNames);
 
     // 子类必须实现：初始化自己的路由
     virtual void initRoutes();

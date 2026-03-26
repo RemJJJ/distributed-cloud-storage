@@ -19,6 +19,11 @@ class DataNodeHandler {
                                   fn::HttpRequest &req,
                                   std::shared_ptr<fn::HttpResponse> &resp);
 
+    // 处理上传文件信息
+    bool handleReportFiles(const fn::TcpConnectionPtr &conn,
+                           fn::HttpRequest &req,
+                           std::shared_ptr<fn::HttpResponse> &resp);
+
   private:
     // 辅助函数
     static void sendError(std::shared_ptr<fn::HttpResponse> &resp,

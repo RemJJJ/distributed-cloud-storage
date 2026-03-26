@@ -70,4 +70,7 @@ class HttpUploadHandler : public BaseHandler {
 
     bool handleFileUpload(const TcpConnectionPtr &conn, HttpRequest &req,
                           std::shared_ptr<HttpResponse> &resp);
+
+    bool handleDownload(const fn::TcpConnectionPtr &conn, fn::HttpRequest &req,
+                        std::shared_ptr<fn::HttpResponse> &resp);
 };

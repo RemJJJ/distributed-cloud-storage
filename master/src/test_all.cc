@@ -8,14 +8,22 @@
 int main(int argc, char *argv[]) {
     std::string loggerLevel;
     std::string configPath = "config.json";
-    if (argc > 1) {
-        loggerLevel = argv[1];
-    }
-    if (argc > 2) {
-        configPath = argv[2];
+    for (int i = 1; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (arg == "-D" || arg == "--debug") {
+            loggerLevel = "DEBUG";
+        } else if (arg.find("--config=") == 0) {
+            configPath = arg.substr(9);
+        } else if (i == 1 && loggerLevel.empty()) {
+            // 兼容旧用法：第一个参数如果不是 -D，暂时认为是日志级别 (可选)
+            loggerLevel = arg;
+        } else if (i == 2) {
+            // 兼容旧用法：第二个参数是配置路径
+            configPath = arg;
+        }
     }
 
-    if (loggerLevel == "-D") {
+    if (loggerLevel == "DEBUG" || loggerLevel == "-D") {
         Logger::setLogLevel(Logger::DEBUG);
     } else {
         Logger::setLogLevel(Logger::INFO);
@@ -44,7 +52,7 @@ int main(int argc, char *argv[]) {
     LOG_INFO << "数据库连接池启动成功";
 
     // 初始化Token管理器
-    TokenManager::init(configPath);
+    TokenManager::init(Config::instance().getString("jwt-secret"));
     // 验证是否初始化成功
     if (!TokenManager::isInitialized()) {
         LOG_FATAL << "TokenManager 初始化失败";

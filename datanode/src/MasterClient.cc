@@ -3,11 +3,14 @@
 #include "base/Timestamp.h"
 #include "net/HttpContext.h"
 #include "net/TimerId.h"
+#include <filesystem>
+#include <fstream>
 #include <mutex>
 #include <nlohmann/json.hpp>
 #include <queue>
 
 using namespace nlohmann;
+namespace fs = std::filesystem;
 
 MasterClient::MasterClient(fn::EventLoop *loop,
                            const fn::InetAddress &masterAddr,
@@ -20,6 +23,18 @@ MasterClient::MasterClient(fn::EventLoop *loop,
     client_->setMessageCallback(
         std::bind(&MasterClient::onMessage, this, std::placeholders::_1,
                   std::placeholders::_2, std::placeholders::_3));
+
+    client_->enableRetry();
+
+    // 初始化时尝试从本地文件读取已有的NodeID
+    std::ifstream ifs("node_id.dat");
+    if (ifs.is_open()) {
+        ifs >> nodeId_;
+        ifs.close();
+        LOG_INFO << "从本地回复DataNode身份, NodeID: " << nodeId_;
+    } else {
+        LOG_INFO << "未找到本地NodeID, 将作为全新节点注册";
+    }
 } // namespace fileserver::net
 
 MasterClient::~MasterClient() { LOG_INFO << "~MasterClient()"; }
@@ -152,7 +167,18 @@ void MasterClient::handleRegisterResponse(const std::string &response) {
         {
             std::lock_guard<std::mutex> lock(authMutex_);
             token_ = newToken;
-            nodeId_ = newNodeId;
+
+            // 如果Master给的ID和本地不一样，保存到磁盘
+            if (nodeId_ != newNodeId) {
+                nodeId_ = newNodeId;
+                std::ofstream ofs("node_id.dat");
+                if (ofs.is_open()) {
+                    ofs << nodeId_;
+                    ofs.close();
+                } else {
+                    LOG_ERROR << "无法将NodeID保存到本地文件node_id.dat";
+                }
+            }
             registered_.store(true);
         }
         LOG_INFO << "注册成功! nodeId=" << nodeId_
@@ -162,6 +188,10 @@ void MasterClient::handleRegisterResponse(const std::string &response) {
         loop_->cancel(tokenRefreshTimerId_);
         tokenRefreshTimerId_ = loop_->runEvery(
             TOKEN_REFRESH_INTERVAL, [this]() { checkTokenExpired(); });
+
+        // 注册成功并获取 Token 后，异步触发“全量文件汇报”
+        // 不要在当前网络回调中同步执行扫盘，避免阻塞 IO 线程！
+        loop_->runInLoop([this]() { reportLocalFiles(); });
 
     } catch (const json::exception &e) {
         LOG_ERROR << "解析注册响应失败：" << e.what();
@@ -179,6 +209,11 @@ void MasterClient::checkTokenExpired() {
 void MasterClient::registerNode() {
     json request = {
         {"ip", myAddr_.toIp()}, {"port", myAddr_.port()}, {"status", "active"}};
+
+    std::string currentId = getNodeId();
+    if (!currentId.empty()) {
+        request["node_id"] = currentId;
+    }
     post("/registerNode", request.dump(), false);
     LOG_INFO << "Register node request sent: " << request.dump();
 }
@@ -340,4 +375,38 @@ void MasterClient::procPendingNotice() {
                              notification.stored_size);
         tempQueue.pop();
     }
+}
+
+// ------------------扫描本地文件---------------------
+void MasterClient::reportLocalFiles() {
+    if (!conn_ || !conn_->connected() || !registered_.load()) {
+        return;
+    }
+
+    std::string uploadDir = "uploads";
+    std::vector<std::string> localFiles;
+
+    // 扫描本地目录
+    try {
+        if (fs::exists(uploadDir) && fs::is_directory(uploadDir)) {
+            for (const auto &entry : fs::directory_iterator(uploadDir)) {
+                if (entry.is_regular_file()) {
+                    // 只收集文件名
+                    localFiles.push_back(entry.path().filename().string());
+                }
+            }
+        }
+    } catch (const std::exception &e) {
+        LOG_ERROR << "扫描本地文件目录失败：" << e.what();
+        return;
+    }
+
+    // 如果没有任何文件，不汇报，或者发个空列表告诉Master我很干净
+    LOG_INFO << "Scan completed. Got " << localFiles.size() << " file(s)";
+
+    json reportJson;
+    reportJson["node_id"] = getNodeId();
+    reportJson["files"] = localFiles;
+
+    post("/report_files", reportJson.dump(), true);
 }

@@ -94,6 +94,12 @@ void HttpUploadHandler::initRoutes() {
                     std::shared_ptr<HttpResponse> &resp) {
                  return handleListFiles(conn, req, resp);
              });
+    addRoute("/download/([^/]+)", fileserver::net::HttpRequest::kGet,
+             [this](const TcpConnectionPtr &conn, HttpRequest &req,
+                    std::shared_ptr<HttpResponse> &resp) {
+                 return handleDownload(conn, req, resp);
+             },
+             {"filename"});
 
     // datanodeHandler路由
     auto datanodeHandler = std::make_shared<DataNodeHandler>();
@@ -113,6 +119,11 @@ void HttpUploadHandler::initRoutes() {
                                std::shared_ptr<HttpResponse> &resp) {
                  return datanodeHandler->handleUploadFinishNotify(conn, req,
                                                                   resp);
+             });
+    addRoute("/report_files", fileserver::net::HttpRequest::kPost,
+             [datanodeHandler](const TcpConnectionPtr &conn, HttpRequest &req,
+                               std::shared_ptr<HttpResponse> &resp) {
+                 return datanodeHandler->handleReportFiles(conn, req, resp);
              });
 }
 
@@ -218,7 +229,7 @@ bool HttpUploadHandler::handleIndex(const TcpConnectionPtr &conn,
     resp->setContentType("text/html; charset=utf-8");
 
     // 2. 获取请求路径
-    std::string path = req.path();
+    const std::string &path = req.path();
     std::string filePath;
     LOG_INFO << "Request path = " << path;
 
@@ -237,7 +248,7 @@ bool HttpUploadHandler::handleIndex(const TcpConnectionPtr &conn,
         LOG_DEBUG << "Executable full path = " << exeFullPath;
 
         // 步骤1：截取可执行文件所在目录（master/src）
-        std::string::size_type pos = exeFullPath.find_last_of("/");
+        std::string::size_type pos = exeFullPath.find_last_of('/');
         if (pos == std::string::npos) {
             LOG_ERROR << "Invalid executable path: " << exeFullPath;
             filePath = "../../web/html/index.html";
@@ -245,7 +256,7 @@ bool HttpUploadHandler::handleIndex(const TcpConnectionPtr &conn,
             std::string srcDir = exeFullPath.substr(0, pos); // master/src
 
             // 步骤2：回退到master目录
-            pos = srcDir.find_last_of("/");
+            pos = srcDir.find_last_of('/');
             if (pos == std::string::npos) {
                 LOG_ERROR << "Failed to find master directory from: " << srcDir;
                 filePath = "../web/html/index.html";
@@ -253,7 +264,7 @@ bool HttpUploadHandler::handleIndex(const TcpConnectionPtr &conn,
                 std::string masterDir = srcDir.substr(0, pos); // master
 
                 // 步骤3：回退到项目根目录（distributed-fm）
-                pos = masterDir.find_last_of("/");
+                pos = masterDir.find_last_of('/');
                 if (pos == std::string::npos) {
                     LOG_ERROR << "Failed to find project root from: "
                               << masterDir;
@@ -499,7 +510,7 @@ bool HttpUploadHandler::handleFavicon(
     const TcpConnectionPtr &conn, HttpRequest &req,
     std::shared_ptr<HttpResponse> &resp) { // 获取当前文件目录
     std::string currentDir = __FILE__;
-    std::string::size_type pos = currentDir.find_last_of("/");
+    std::string::size_type pos = currentDir.find_last_of('/');
     std::string projectRoot = currentDir.substr(0, pos);
     std::string faviconPath = projectRoot + "/favicon.ico";
 
@@ -704,4 +715,77 @@ bool HttpUploadHandler::handleFileUpload(const TcpConnectionPtr &conn,
                   fn::HttpResponse::k500InternalServerError, conn);
         return true;
     }
+}
+
+bool HttpUploadHandler::handleDownload(
+    const fn::TcpConnectionPtr &conn, fn::HttpRequest &req,
+    std::shared_ptr<fn::HttpResponse> &resp) {
+
+    // 验证用户登录状态
+    std::string authHeader = req.getHeader("Authorization");
+    std::string userToken =
+        (authHeader.empty()) ? req.getQuery("token") : authHeader.substr(7);
+
+    int userId = TokenManager::instance().verifyUserToken(userToken);
+    if (userId <= 0) {
+        sendError(resp, "请先登录", fn::HttpResponse::k401Unauthorized, conn);
+        return true;
+    }
+
+    std::string serverFilename = req.getPathParam("filename");
+    if (serverFilename.empty()) {
+        sendError(resp, "文件名不能为空", fn::HttpResponse::k400BadRequest,
+                  conn);
+        return true;
+    }
+
+    auto mysql = db::MySQLPool::instance().getConnection();
+    std::string querySql =
+        "SELECT id, node_id, filename, file_size FROM files WHERE "
+        "filename = ? AND user_id = ? AND status = 'success' LIMIT 1";
+    db::MySQLStatement stmt(*mysql, querySql);
+    stmt.bindString(serverFilename);
+    stmt.bindInt(userId);
+
+    if (!stmt.execute()) {
+        sendError(resp, "数据库错误", fn::HttpResponse::k500InternalServerError,
+                  conn);
+        return true;
+    }
+
+    auto rs = stmt.getResultSet();
+    if (!rs->next()) {
+        sendError(resp, "文件未找到或尚未上传成功",
+                  fn::HttpResponse::k404NotFound, conn);
+        return true;
+    }
+
+    int64_t fileId = rs->getInt64(0);
+    std::string nodeId = rs->getString(1);
+    std::string filename = rs->getString(2);
+    uintmax_t fileSize = rs->getInt64(3);
+
+    // 获取 DataNode 地址
+    auto nodeInfo = NodeManager::instance().getNodeInfo(nodeId);
+    if (!nodeInfo || !nodeInfo->isAlive_) {
+        sendError(resp, "存储节点离线",
+                  fn::HttpResponse::k500InternalServerError, conn);
+        return true;
+    }
+    auto fileResponse = TokenManager::instance().generateFileToken(
+        userId, fileId, nodeId, serverFilename);
+
+    // 返回 DataNode 播放地址
+    json response = {{"code", 0},
+                     {"data",
+                      {{"downloadUrl", "http://" + nodeInfo->addr_.toIpPort() +
+                                           "/api/datanode/download"},
+                       {"token", fileResponse.token},
+                       {"fileSize", fileSize}}}};
+
+    resp->setStatusCode(fn::HttpResponse::k200Ok);
+    std::string respBody = response.dump();
+    resp->setBody(respBody);
+    resp->addHeader("Content-Length", std::to_string(respBody.size()));
+    return true;
 }
