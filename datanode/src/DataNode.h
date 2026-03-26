@@ -1,11 +1,12 @@
 #pragma once
-#include "MasterClient.h"
 #include "base/Logging.h"
 #include "net/HttpServer.h"
 #include "net/InetAddress.h"
 #include <iostream>
 
 class DataNodeHttpHandler;
+class MasterClient;
+namespace fn = fileserver::net;
 
 class DataNode {
   public:
@@ -21,7 +22,12 @@ class DataNode {
     /// @brief 获取MasterClient
     MasterClient *getMasterClient() { return masterClient_.get(); }
 
-    /// @brief 获取EventLoop
+    // 原子计数器，记录当前正在处理的上传请求数
+    std::atomic<int> activeUploads_{0};
+
+    void incActiveUpload() { activeUploads_++; }
+    void decActiveUpload() { activeUploads_--; }
+    int getActiveUploads() const { return activeUploads_.load(); }
 
   private:
     fn::EventLoop *loop_;

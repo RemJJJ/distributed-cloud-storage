@@ -1,4 +1,5 @@
 #pragma once
+#include "DataNode.h"
 #include "base/Timestamp.h"
 #include "net/Buffer.h"
 #include "net/EventLoop.h"
@@ -12,7 +13,7 @@ namespace fn = fileserver::net;
 class MasterClient {
   public:
     MasterClient(fn::EventLoop *loop, const fn::InetAddress &masterAddr,
-                 const fn::InetAddress &myAddr);
+                 const fn::InetAddress &myAddr, DataNode *datanode);
     ~MasterClient();
 
     /// @brief 启动：发起对 Master 的连接
@@ -81,7 +82,8 @@ class MasterClient {
     void reportLocalFiles();
 
     //------成员变量------
-    fn::EventLoop *loop_;                   // 绑定loop
+    fn::EventLoop *loop_; // 绑定loop
+    DataNode *datanode_;
     std::unique_ptr<fn::TcpClient> client_; // muduo TcpClient
     fn::TcpConnectionPtr conn_;             // 暂定，单loop下持有强引用安全
 

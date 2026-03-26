@@ -1,6 +1,7 @@
 #include "DataNodeHttpHandler.h"
 #include "DataNode.h"
 #include "LocalFileStorage.h"
+#include "MasterClient.h"
 #include "TokenManager.h"
 #include "base/ThreadPool.h"
 #include "net/Callbacks.h"
@@ -97,6 +98,7 @@ void DataNodeHttpHandler::onConnection(const TcpConnectionPtr &conn) {
             if (auto uploadContext = context->getContext<FileUploadContext>()) {
                 LOG_INFO << "Cleaning up upload context for file: "
                          << uploadContext->getFilename();
+                datanode_->decActiveUpload();
             }
         }
         conn->setContext(std::shared_ptr<void>());
@@ -172,6 +174,9 @@ bool DataNodeHttpHandler::handleFileUpload(
                 fileID, filePath, std::move(localStorage));
             httpContext->setContext(uploadContext);
             LOG_INFO << "开始接收文件: " << serverFilename;
+
+            // 新的上传任务开始，计数器+1
+            datanode_->incActiveUpload();
         } catch (std::exception &e) {
             sendError(resp, "无法创建文件",
                       HttpResponse::k500InternalServerError, conn);
@@ -193,6 +198,9 @@ bool DataNodeHttpHandler::handleFileUpload(
     // 检查是否完成
     if (uploadContext->getState() == FileUploadContext::State::kComplete ||
         httpContext->gotAll()) {
+        // 上传任务完成，计数器-1
+        datanode_->decActiveUpload();
+
         auto file_id = uploadContext->getFileID();
         auto server_filename = uploadContext->getFilename();
         auto stored_size = uploadContext->getTotalBytes();

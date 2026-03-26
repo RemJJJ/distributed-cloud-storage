@@ -5,6 +5,7 @@
 #include "base/Timestamp.h"
 #include "net/EventLoop.h"
 #include "net/InetAddress.h"
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -41,13 +42,14 @@ class NodeManager {
 
     ///@brief 更新心跳
     void updateHeartbeat(const std::string &node_id,
-                         const fn::InetAddress &newAddr);
+                         const fn::InetAddress &newAddr, uint64_t disk_total,
+                         uint64_t disk_free, int active_uploads);
 
     ///@brief 启动超时检测定时器（在 Master 启动时调用一次）
     void startTimeoutChecker(fn::EventLoop *loop, double interval = 5.0);
 
     ///@brief 获取一个活着的节点
-    std::shared_ptr<DataNodeInfo> getAliveNode();
+    std::shared_ptr<DataNodeInfo> getAliveNode(uint64_t requiredSpace = 0);
 
     /// @brief 用node_id获取节点
     std::shared_ptr<DataNodeInfo> getNodeInfo(const std::string &node_id);

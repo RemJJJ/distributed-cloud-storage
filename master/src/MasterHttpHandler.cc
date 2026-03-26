@@ -646,7 +646,7 @@ bool HttpUploadHandler::handleFileUpload(const TcpConnectionPtr &conn,
         }
 
         // 从 NodeManager 获取一个存活的 DataNode
-        auto dataNode = NodeManager::instance().getAliveNode();
+        auto dataNode = NodeManager::instance().getAliveNode(fileSize);
         if (!dataNode) {
             LOG_ERROR << "没有可用的 DataNode 节点";
             sendError(resp, "系统繁忙，当前无可用存储节点",

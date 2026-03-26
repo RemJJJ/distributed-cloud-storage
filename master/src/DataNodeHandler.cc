@@ -138,8 +138,15 @@ bool DataNodeHandler::handleHeartbeat(const fn::TcpConnectionPtr &conn,
 
         std::string node_ip = jsonData["ip"].get<std::string>();
         uint16_t node_port = jsonData["port"].get<uint16_t>();
+
+        // 解析调度指标
+        uint64_t disk_total = jsonData.value("disk_total_mb", 0ULL);
+        uint64_t disk_free = jsonData.value("disk_free_mb", 0ULL);
+        int active_uploads = jsonData.value("active_uploads", 0);
+
         fn::InetAddress newAddr(node_ip, node_port);
-        NodeManager::instance().updateHeartbeat(node_id, newAddr);
+        NodeManager::instance().updateHeartbeat(node_id, newAddr, disk_total,
+                                                disk_free, active_uploads);
 
         LOG_INFO << "心跳更新成功：" << node_id << " @ " << newAddr.toIpPort();
     } catch (const json::parse_error &e) {

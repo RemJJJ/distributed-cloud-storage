@@ -1,8 +1,10 @@
 #include "MasterClient.h"
+#include "DataNode.h"
 #include "base/Logging.h"
 #include "base/Timestamp.h"
 #include "net/HttpContext.h"
 #include "net/TimerId.h"
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <mutex>
@@ -14,9 +16,10 @@ namespace fs = std::filesystem;
 
 MasterClient::MasterClient(fn::EventLoop *loop,
                            const fn::InetAddress &masterAddr,
-                           const fn::InetAddress &myAddr)
-    : loop_(loop), client_(std::make_unique<fn::TcpClient>(
-                       loop, masterAddr, "MasterClient - TcpClient")),
+                           const fn::InetAddress &myAddr, DataNode *datanode)
+    : loop_(loop), datanode_(datanode),
+      client_(std::make_unique<fn::TcpClient>(loop, masterAddr,
+                                              "MasterClient - TcpClient")),
       masterAddr_(masterAddr), myAddr_(myAddr) {
     client_->setConnectionCallback(
         std::bind(&MasterClient::onConnection, this, std::placeholders::_1));
@@ -243,13 +246,31 @@ void MasterClient::sendHeartbeat() {
         currentToken = token_;
         currentNodeId = nodeId_;
     }
+
+    // 获取磁盘信息
+    uint64_t diskTotalMb = 0;
+    uint64_t diskFreeMb = 0;
+    try {
+        std::filesystem::space_info si = std::filesystem::space("uploads");
+        diskTotalMb = si.capacity / (1024 * 1024);
+        diskFreeMb = si.available / (1024 * 1024);
+    } catch (const std::exception &e) {
+        LOG_WARN << "Get disk space failed: " << e.what();
+    }
+
+    // 获取当前活跃上传数
+    int activeUploads = datanode_->getActiveUploads();
     json hbMessage = {
         {"node_id", currentNodeId},
         {"ip", myAddr_.toIp()},
         {"port", myAddr_.port()},
+        {"disk_total_mb", diskTotalMb},
+        {"disk_free_mb", diskFreeMb},
+        {"active_uploads", activeUploads},
         {"timestamp", fileserver::Timestamp::now().microSecondsSinceEpoch()}};
     post("/heartbeat", hbMessage.dump(), true);
-    LOG_INFO << "Heartbeat sent: " << hbMessage.dump();
+    LOG_INFO << "Heartbeat sent. Frees: " << diskFreeMb
+             << "MB, Active: " << activeUploads;
 }
 
 void MasterClient::post(const std::string &path, const std::string &body,
