@@ -171,7 +171,7 @@ int main(int argc, char *argv[]) {
 
     // 3. 配置地址
     fileserver::net::InetAddress listenAddr(local_ip, 9000); // DataNoded地址
-    fileserver::net::InetAddress masterAddr("192.168.0.103",
+    fileserver::net::InetAddress masterAddr("192.168.0.106",
                                             8000); // Master 地址
 
     DataNode datanode(&loop, listenAddr, masterAddr);

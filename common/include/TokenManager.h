@@ -1,3 +1,4 @@
+#pragma once
 #include "nlohmann/json.hpp"
 #include <chrono>
 #include <cstdint>
@@ -85,6 +86,9 @@ class TokenManager {
                                       const std::string &original_filename,
                                       const std::string &server_filename);
 
+    /// @brief 生成文件删除Token
+    std::string generateDeleteToken(const std::string &server_filename);
+
     /// @brief 基础验证
     verifyResult verifyToken(const std::string &token);
 
@@ -102,6 +106,10 @@ class TokenManager {
     bool verifyDownloadToken(const std::string &token,
                              std::string &out_original_filename,
                              std::string &out_server_filename);
+
+    /// @brief 验证删除文件Token
+    bool verifyDeleteToken(const std::string &token,
+                           std::string &out_server_filename);
 
     /// @brief 检查是否有效
     bool isValid(const std::string &token);

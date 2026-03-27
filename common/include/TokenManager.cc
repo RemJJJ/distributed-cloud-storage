@@ -142,6 +142,21 @@ TokenManager::generateNodeToken(const std::string &node_id,
     return {node_id, token};
 }
 
+// 生成删除Token
+std::string
+TokenManager::generateDeleteToken(const std::string &server_filename) {
+    auto now = std::chrono::system_clock::now();
+    return jwt::create()
+        .set_issuer("fileserver_master")
+        .set_type("JWT")
+        .set_payload_claim("token_type", jwt::claim(std::string("delete")))
+        .set_payload_claim("server_filename", jwt::claim(server_filename))
+        .set_issued_at(now)
+        .set_expires_at(now +
+                        std::chrono::minutes(5)) // 删除指令 5 分钟内有效即可
+        .sign(jwt::algorithm::hs256{secretKey_});
+}
+
 // ================= 基础验证逻辑 =================
 
 TokenManager::verifyResult TokenManager::verifyToken(const std::string &token) {
@@ -242,6 +257,16 @@ bool TokenManager::verifyDownloadToken(const std::string &token,
         return false;
     }
     out_original_filename = result.payload.value("original_filename", "");
+    out_server_filename = result.payload.value("server_filename", "");
+    return !out_server_filename.empty();
+}
+
+bool TokenManager::verifyDeleteToken(const std::string &token,
+                                     std::string &out_server_filename) {
+    auto result = verifyToken(token);
+    if (!result.success || result.payload.value("token_type", "") != "delete") {
+        return false;
+    }
     out_server_filename = result.payload.value("server_filename", "");
     return !out_server_filename.empty();
 }

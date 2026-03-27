@@ -104,6 +104,11 @@ void DataNodeHttpHandler::initRoutes() {
                     std::shared_ptr<HttpResponse> &resp) {
                  return handleFileDownload(conn, req, resp);
              });
+    addRoute("/api/datanode/delete", fileserver::net::HttpRequest::kPost,
+             [this](const TcpConnectionPtr &conn, HttpRequest &req,
+                    std::shared_ptr<HttpResponse> &resp) {
+                 return handleDeleteFile(conn, req, resp);
+             });
 }
 
 void DataNodeHttpHandler::onConnection(const TcpConnectionPtr &conn) {
@@ -278,8 +283,7 @@ bool DataNodeHttpHandler::handleFileDownload(
         return true;
     }
 
-    // ⚠️ 极其重要：即使是真正的 POST
-    // 响应，也必须带上跨域头，否则前端拿不到响应数据！
+    // 即使是真正的 POST响应，也必须带上跨域头，否则前端拿不到响应数据！
     resp->addHeader("Access-Control-Allow-Origin", "*");
 
     std::string token = req.getQuery("token");
@@ -321,8 +325,7 @@ bool DataNodeHttpHandler::handleFileDownload(
     resp->addHeader("Accept-Ranges", "bytes");
     resp->addHeader("Content-Disposition",
                     "attachment; filename=\"" + originalFilename + "\"");
-    resp->setContentType(
-        getMimeType(originalFilename)); // 简单起见写死，实际应根据后缀判断
+    resp->setContentType(getMimeType(originalFilename));
     if (isRange) {
         resp->addHeader("Content-Range", "bytes " + std::to_string(startPos) +
                                              "-" + std::to_string(endPos) +
@@ -344,11 +347,62 @@ bool DataNodeHttpHandler::handleFileDownload(
                 connection->send(chunk);
                 return true;
             } else {
-                // connection->shutdown(); // 视频流通常保持长连接，不建议立刻
-                // shutdown
+                connection->shutdown();
                 return true;
             }
+            return true;
         });
 
+    return true;
+}
+
+bool DataNodeHttpHandler::handleDeleteFile(
+    const TcpConnectionPtr &conn, HttpRequest &req,
+    std::shared_ptr<HttpResponse> &resp) {
+    if (req.method() != HttpRequest::kPost ||
+        req.path() != "/api/datanode/delete")
+        return true;
+
+    std::string authHeader = req.getHeader("Authorization");
+    if (authHeader.empty() || authHeader.substr(0, 7) != "Bearer ") {
+        sendError(resp, "未授权", HttpResponse::k401Unauthorized, conn);
+        return true;
+    }
+
+    std::string token = authHeader.substr(7);
+    std::string serverFilename;
+    if (!TokenManager::instance().verifyDeleteToken(token, serverFilename)) {
+        sendError(resp, "删除 Token 无效或已过期", HttpResponse::k403Forbidden,
+                  conn);
+        return true;
+    }
+
+    std::string filepath = uploadDir_ + "/" + serverFilename;
+    try {
+        if (std::filesystem::exists(filepath)) {
+            std::filesystem::remove(filepath);
+            LOG_INFO << "DataNode 成功物理删除文件: " << filepath;
+        } else {
+            LOG_WARN << "DataNode 物理文件不存在 (可能已被删除): " << filepath;
+            sendError(resp, "Physial file not found",
+                      HttpResponse::k404NotFound, conn);
+            return true;
+        }
+    } catch (const std::exception &e) {
+        LOG_ERROR << "DataNode 删除物理文件失败: " << e.what();
+        sendError(resp, "物理删除失败", HttpResponse::k500InternalServerError,
+                  conn);
+        return true;
+    }
+
+    resp->setStatusCode(HttpResponse::k200Ok);
+    resp->setContentType("application/json");
+    std::string bodyStr = R"({"code": 0, "message": "物理删除成功"})";
+    resp->setBody(bodyStr);
+    resp->addHeader("Content-Length", std::to_string(bodyStr.size()));
+    conn->setWriteCompleteCallback([](const TcpConnectionPtr &connection) {
+        connection->shutdown();
+        return true;
+    });
     return true;
 }

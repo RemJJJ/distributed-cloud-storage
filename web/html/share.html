@@ -104,7 +104,7 @@
 
             try {
                 // 向 Master 验证密码并换取 Token
-                const res = await fetch('/api/share/verify', {
+                const res = await fetch('/share/verify', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ shareId: shareId, extractCode: extractCode })

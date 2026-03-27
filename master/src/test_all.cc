@@ -71,7 +71,7 @@ int main(int argc, char *argv[]) {
     HttpServer server(&loop, InetAddress(8000), "http-upload-test");
 
     // 创建HTTP处理器
-    auto handler = std::make_shared<HttpUploadHandler>(0);
+    auto handler = std::make_shared<MasterHttpHandler>(0);
 
     // 设置连接回调
     server.setConnectionCallback([handler](const TcpConnectionPtr &conn) {
@@ -85,9 +85,10 @@ int main(int argc, char *argv[]) {
         return handler->onRequest(conn, req, resp);
     });
 
-    server.setThreadNum(4);
+    server.setThreadNum(10);
     NodeManager::instance().startTimeoutChecker(&loop, 5.0);
     server.start();
+    handler->startGC(&loop);
     std::cout << "HTTP upload server is running on port 8000..." << std::endl;
     std::cout << "Please visit http://localhost:8000" << std::endl;
     loop.loop();

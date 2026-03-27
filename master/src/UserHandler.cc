@@ -486,9 +486,6 @@ bool UserHandler::handleShareFile(const fn::TcpConnectionPtr &conn,
             expireStr = ss.str(); // 得到类似 "2023-12-31 23:59:59" 的字符串
         }
 
-        // 生成分享码
-        std::string shareCode = generateShareCode();
-
         // 处理分享类型
         std::string extractCode = "";
         int targetUserId = 0;
@@ -513,10 +510,49 @@ bool UserHandler::handleShareFile(const fn::TcpConnectionPtr &conn,
                 return true;
             }
 
-        } else if (shareType == "protected") {
-            // 生成提取吗
-            extractCode = generateExtractCode();
+        } else if (shareType == "public" || shareType == "protected") {
+            std::string existQuery =
+                "SELECT share_id, extract_code FROM file_shares "
+                "WHERE file_id = ? AND user_id = ? AND share_type = ? "
+                "AND (expire_time IS NULL OR expire_time > NOW()) LIMIT 1";
+            db::MySQLStatement existStmt(*mysql, existQuery);
+            existStmt.bindInt(fileId);
+            existStmt.bindInt(userId);
+            existStmt.bindString(shareType);
+            if (existStmt.execute()) {
+                auto rs = existStmt.getResultSet();
+                if (rs && rs->next()) {
+                    // 命中：直接返回已有的信息
+                    std::string oldShareId = rs->getString(0);
+                    std::string oldExtractCode = rs->getString(1);
+
+                    json response = {{"code", 0},
+                                     {"message", "获取已有分享信息"},
+                                     {"data",
+                                      {{"shareId", oldShareId},
+                                       {"shareType", shareType},
+                                       {"shareLink", "/s/" + oldShareId}}}};
+                    if (shareType == "protected" && !oldExtractCode.empty()) {
+                        response["data"]["extractCode"] = oldExtractCode;
+                    }
+                    resp->setStatusCode(fn::HttpResponse::k200Ok);
+                    resp->setStatusMessage("OK");
+                    resp->setContentType("application/json");
+                    resp->addHeader("Connection", "close");
+                    std::string bodyStr = response.dump();
+                    resp->setBody(bodyStr);
+                    resp->addHeader("Content-Length",
+                                    std::to_string(bodyStr.size()));
+                    return true;
+                }
+            }
+
+            if (shareType == "protected") {
+                extractCode = generateExtractCode();
+            }
         }
+
+        std::string shareCode = generateShareCode();
 
         // 创建分享记录
         std::string insertQuery =
@@ -562,7 +598,7 @@ bool UserHandler::handleShareFile(const fn::TcpConnectionPtr &conn,
 
         if (shareType == "specific") {
             response["data"]["sharedWithId"] = targetUserId;
-        } else if (shareType == "protected") {
+        } else if (shareType == "protected" || shareType == "public") {
             // public 和 protected 都有链接
             response["data"]["shareLink"] =
                 "/share/" + shareCode; // 建议加上完整域名
@@ -658,7 +694,7 @@ bool UserHandler::handleShareInfo(const fn::TcpConnectionPtr &conn,
         "JOIN files f ON s.file_id = f.id "
         "JOIN users u ON s.user_id = u.id "
         "WHERE s.share_id = ? AND (s.expire_time IS NULL OR s.expire_time > "
-        "NOW())";
+        "NOW()) AND f.is_deleted = 0";
 
     db::MySQLStatement stmt(*mysql, sql);
     stmt.bindString(shareId);
@@ -666,8 +702,8 @@ bool UserHandler::handleShareInfo(const fn::TcpConnectionPtr &conn,
 
     auto rs = stmt.getResultSet();
     if (!rs || !rs->next()) {
-        sendError(resp, "分享已取消或已过期", fn::HttpResponse::k404NotFound,
-                  conn);
+        sendError(resp, "分享已失效或文件所有者已删除文件",
+                  fn::HttpResponse::k404NotFound, conn);
         return true;
     }
 
@@ -703,7 +739,7 @@ bool UserHandler::handleShareVerify(const fn::TcpConnectionPtr &conn,
             "s.extract_code "
             "FROM file_shares s JOIN files f ON s.file_id = f.id "
             "WHERE s.share_id = ? AND (s.expire_time IS NULL OR s.expire_time "
-            "> NOW())";
+            "> NOW()) AND f.is_deleted = 0";
 
         db::MySQLStatement stmt(*mysql, sql);
         stmt.bindString(shareId);
@@ -712,7 +748,8 @@ bool UserHandler::handleShareVerify(const fn::TcpConnectionPtr &conn,
         auto rs = stmt.getResultSet();
 
         if (!rs || !rs->next()) {
-            sendError(resp, "分享已失效", fn::HttpResponse::k404NotFound, conn);
+            sendError(resp, "分享已失效或文件所有者已删除文件",
+                      fn::HttpResponse::k404NotFound, conn);
             return true;
         }
         std::string nodeId = rs->getString(0);
@@ -766,7 +803,7 @@ bool UserHandler::handleListSharedWithMe(
     const fn::TcpConnectionPtr &conn, fn::HttpRequest &req,
     std::shared_ptr<fn::HttpResponse> &resp) {
     if (req.method() != fn::HttpRequest::kGet ||
-        req.path() != "/api/share/received")
+        req.path() != "/share/received")
         return true;
 
     std::string token = req.getHeader("Authorization").substr(7);
@@ -784,7 +821,8 @@ bool UserHandler::handleListSharedWithMe(
         "FROM file_shares s "
         "JOIN files f ON s.file_id = f.id "
         "JOIN users u ON s.user_id = u.id "
-        "WHERE s.target_user_id = ? AND s.share_type = 'specific' "
+        "WHERE s.target_user_id = ? AND s.share_type = 'specific' AND "
+        "f.is_deleted = 0 "
         "ORDER BY s.created_at DESC";
 
     db::MySQLStatement stmt(*mysql, sql);

@@ -9,7 +9,7 @@
     <style>
         body { 
             font-family: Arial, sans-serif; 
-            max-width: 800px; 
+            max-width: 1000px; 
             margin: 0 auto; 
             padding: 20px;
             background-color: #f5f5f5;
@@ -173,7 +173,7 @@
         }
         .user-search input {
             width: 100%;
-            padding: 12px;
+            padding: 10px;
             border: 2px solid #e0e0e0;
             border-radius: 8px;
             font-size: 14px;
@@ -287,6 +287,40 @@
         }
         .dialog-button.secondary:hover {
             background-color: #d0d0d0;
+        }
+        .dialog-button1{
+            align-items: center;
+            padding: 10px 25px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.2s;
+            gap: 8px;
+        }
+        /* ===== 默认状态 ===== */
+
+        /* 未选中（白底蓝字） */
+        .dialog-button1 {
+            background-color: white;
+            color: #000000;
+        }
+
+        /* 未选中 hover（灰色） */
+        .dialog-button1:hover {
+            background-color: #f5f5f5;
+        }
+
+        /* ===== 选中状态 ===== */
+
+        .dialog-button1.active {
+            background-color: #409eff;
+            color: white;
+        }
+
+        /* 选中 hover（深蓝） */
+        .dialog-button1.active:hover {
+            background-color: #337ecc;
         }
         .action-button i {
             font-size: 1.1em;
@@ -532,13 +566,21 @@
             color: #1976d2;
             border-left: 4px solid #1976d2;
         }
+        .header-bar {
+            display: flex;
+            justify-content: space-between; /* 左右分布 */
+            align-items: center;
+            margin-bottom: 20px;
+        }
     </style>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.4/css/all.min.css">
 </head>
 <body>
     <div id="user-info" class="user-info hidden">
         欢迎，<span id="username-display"></span>
-        <button onclick="logout()" class="logout-button">退出登录</button>
+        <button onclick="logout()" class="logout-button">
+            <i class="fas fa-sign-out-alt">退出登录</i>
+        </button>
     </div>
 
     <div id="login-form" class="login-form">
@@ -557,7 +599,9 @@
             <div id="password-error" class="error-message"></div>
         </div>
         
-        <button onclick="login()">登录</button>
+        <button onclick="login()">
+            <i class="fas fa-sign-in-alt">登录</i>
+        </button>
         
         <div class="auth-links">
             <a href="register.html">还没有账号？立即注册</a>
@@ -565,20 +609,36 @@
     </div>
 
     <div id="main-content" class="hidden">
-        <h1>C++个人云存储项目</h1>
-        <!-- 🌟 新增：顶部导航栏 -->
-        <div style="margin-bottom: 20px; display: flex; gap: 10px;">
-            <button class="dialog-button primary" onclick="switchTab('my-files')">我的文件</button>
-            <button class="dialog-button secondary" onclick="switchTab('shared-with-me')">与我共享</button>
+        <div class="header-bar">
+            <h1>
+                <i class="fas fa-hdd"></i>
+                分布式云存储项目
+            </h1>
+            
+            <!--顶部导航栏 -->
+            <div class="tab-buttons" style="margin-bottom: 20px; display: flex; gap: 10px;">
+                <button id="btn-my-files" class="dialog-button1 active" onclick="switchTab('my-files')">
+                    <i class="fas fa-folder-open">我的文件</i> 
+                </button>
+                <button id="btn-shared" class="dialog-button1" onclick="switchTab('shared-with-me')">
+                    <i class="fas fa-user-friends">与我共享</i> 
+                </button>
+                <button id="btn-recycle-bin" class="dialog-button1" onclick="switchTab('recycle-bin')">
+                    <i class="fas fa-trash">回收站</i> 
+                </button>    
+            </div>
         </div>
+        
         <div class="upload-form">
             <input type="file" id="file-input">
-            <button class="upload-button" onclick="uploadFile()">上传文件</button>
+            <button class="upload-button" onclick="uploadFile()">
+                <i class="fas fa-cloud-upload-alt">上传文件</i>
+            </button>
             <div class="progress">
                 <div class="progress-bar"></div>
             </div>
         </div>
-        <h2>已上传文件列表</h2>
+        <h2 id="file-list-title">已上传文件列表</h2>
         <div id="file-list"></div>
 
         <!-- 添加视频播放器和遮罩层 -->
@@ -635,29 +695,44 @@
                     <label>分享链接</label>
                     <div class="content">
                         <span class="text" id="shareLink"></span>
-                        <button class="copy-button" onclick="copyAndClose('shareLink')">复制并关闭</button>
                     </div>
                 </div>
                 <div class="share-info-item" id="extractCodeContainer" style="display: none;">
                     <label>提取码</label>
                     <div class="content">
                         <span class="text" id="extractCode"></span>
-                        <button class="copy-button" onclick="copyAndClose('extractCode')">复制并关闭</button>
                     </div>
+                </div>
+                <!--一键复制按钮 -->
+                <div style="margin-top: 20px; display: flex; gap: 10px;">
+                    <button class="dialog-button primary" style="flex: 2;" onclick="copyAllShareInfo()">
+                        <i class="fas fa-copy">一键复制链接及提取码</i> 
+                    </button>
+                    <button class="dialog-button secondary" style="flex: 1;" onclick="closeShareDialog()">
+                        <i class="fas fa-times-circle">关闭</i>
+                    </button>
                 </div>
             </div>
             
-            <div class="dialog-buttons">
-                <button class="dialog-button primary" onclick="shareFile()">分享</button>
-                <button class="dialog-button secondary" onclick="closeShareDialog()">取消</button>
+            <div class="dialog-buttons" id="dialogButtonsContainer" style="display: flex; justify-content: center;">
+                <button class="dialog-button primary" onclick="shareFile()">
+                    <i class="fas fa-share-alt"></i>分享
+                </button>
+                <button class="dialog-button secondary" onclick="closeShareDialog()">
+                    <i class="fas fa-times-circle"></i>取消
+                </button>
             </div>
         </div>
-    </div>
-
-    <!-- 🌟 新增：与我共享区域 -->
-    <div id="shared-with-me-section" style="display: none;">
-        <h2>别人分享给我的文件</h2>
-        <div id="shared-list"></div>
+        <!-- 🌟 新增：与我共享区域 -->
+        <div id="shared-with-me-section" style="display: none;">
+            <h2>别人分享给我的文件</h2>
+            <div id="shared-list"></div>
+        </div>
+        <div id="recycle-bin-section" style="display: none;">
+            <h2>回收站</h2>
+            <p style="color: #666; text-align: center;">被删除的文件会保存在这里，您可以恢复或彻底删除它们。</p>
+            <div id="recycle-list"></div>
+        </div>
     </div>
 
     <script>
@@ -668,44 +743,29 @@
     let token = localStorage.getItem('token');
     let currentUser = localStorage.getItem('username');
 
-    // 下载文件函数
-    async function downloadFile(filename, originalName) {
+    function downloadFile(filename, originalName) {
         if (!token) {
             alert('请先登录');
             return;
         }
 
-        try {
-            const response = await fetch(`/download/${encodeURIComponent(filename)}`, {
-                headers: {
-                    'Authorization' : 'Bearer ' + token
-                }
-            });
-
-            if(response.status === 404)throw new Error("接口不存在，请检查路由");
-            const result = await response.json();
+        fetch(`/download/${encodeURIComponent(filename)}`, {
+            headers: {
+                'Authorization': 'Bearer ' + token
+            }
+        })
+        .then(res => res.json())
+        .then(result => {
             if (result.code !== 0) throw new Error(result.message);
 
-            // 拿到 DataNode 地址和专属 Token
             const downloadUrl = `${result.data.downloadUrl}?token=${result.data.token}`;
 
-            // 注意：因为是跨域下载，直接用 a.href = url 可能会导致浏览器直接打开视频而不是下载。
-            // 稳妥的做法是用 fetch 拿到 blob 再下载。
-            const dnRes = await fetch(downloadUrl);
-            if (!dnRes.ok) throw new Error("从存储节点下载失败");
-            
-            const blob = await dnRes.blob();
-            const url = window.URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = originalName;
-            document.body.appendChild(a);
-            a.click();
-            window.URL.revokeObjectURL(url);
-            document.body.removeChild(a);
-        } catch (error) {
-            alert('下载失败: ' + error.message);
-        }
+            // ✅ 直接让浏览器下载（关键）
+            window.location.href = downloadUrl;
+        })
+        .catch(err => {
+            alert('下载失败: ' + err.message);
+        });
     }
 
     // 检查登录状态
@@ -716,7 +776,11 @@
             document.getElementById('user-info').classList.remove('hidden');
             document.getElementById('username-display').textContent = currentUser;
             loadFileList();
+            console.log("加载完上传文件列表");
             loadSharedWithMeList();
+            console.log("加载完分享文件列表");
+            loadRecycleBin();
+            console.log("加载完回收站文件列表");
         } else {
             document.getElementById('login-form').classList.remove('hidden');
             document.getElementById('main-content').classList.add('hidden');
@@ -1047,41 +1111,33 @@
                     actionsDiv.appendChild(previewButton);
                 }
                 
-                // 分享按钮
-                if (file.isOwner) {
-                    const shareButton = document.createElement('button');
-                    shareButton.className = 'action-button share-button';
-                    shareButton.innerHTML = '<i class="fas fa-share-alt"></i> 分享';
-                    shareButton.onclick = () => openShareDialog(file);
-                    actionsDiv.appendChild(shareButton);
-
-                    // 如果有分享信息，添加取消分享按钮
-                    if (file.shareInfo && file.shareInfo.type !== 'private') {
-                        const cancelShareButton = document.createElement('button');
-                        cancelShareButton.className = 'action-button cancel-share-button';
-                        cancelShareButton.innerHTML = '<i class="fas fa-times-circle"></i> 取消分享';
-                        cancelShareButton.onclick = () => {
-                            if (confirm('确定要取消分享吗？')) {
-                                cancelShare(file.id);
-                            }
-                        };
-                        actionsDiv.appendChild(cancelShareButton);
-                    }
-                }
-                
-                // 删除按钮
-                if (file.isOwner) {
-                    const deleteButton = document.createElement('button');
-                    deleteButton.className = 'action-button delete-button';
-                    deleteButton.innerHTML = '<i class="fas fa-trash"></i> 删除';
-                    deleteButton.onclick = () => {
-                        if (confirm('确定要删除这个文件吗？')) {
-                            deleteFile(file.name);
+                const shareButton = document.createElement('button');
+                shareButton.className = 'action-button share-button';
+                shareButton.innerHTML = '<i class="fas fa-share-alt"></i> 分享';
+                shareButton.onclick = () => openShareDialog(file);
+                actionsDiv.appendChild(shareButton);
+                // 如果有分享信息，添加取消分享按钮
+                if (file.shareInfo) {
+                    const cancelShareButton = document.createElement('button');
+                    cancelShareButton.className = 'action-button cancel-share-button';
+                    cancelShareButton.innerHTML = '<i class="fas fa-times-circle"></i> 取消分享';
+                    cancelShareButton.onclick = () => {
+                        if (confirm('确定要取消分享吗？')) {
+                            cancelShare(file.id);
                         }
                     };
-                    actionsDiv.appendChild(deleteButton);
+                    actionsDiv.appendChild(cancelShareButton);
                 }
                 
+                const deleteButton = document.createElement('button');
+                deleteButton.className = 'action-button delete-button';
+                deleteButton.innerHTML = '<i class="fas fa-trash"></i> 删除';
+                deleteButton.onclick = () => {
+                    if (confirm('确定要删除这个文件吗？')) {
+                            deleteFile(file.name);
+                    }
+                };
+                actionsDiv.appendChild(deleteButton);
                 actionsDiv.appendChild(downloadButton);
                 
                 headerDiv.appendChild(nameSpan);
@@ -1114,12 +1170,16 @@
                     
                     if (file.shareInfo.shareCode) {
                         const shareLink = `${window.location.origin}/s/${file.shareInfo.shareCode}`;
-                        statusHtml += `<br>分享链接：<a href="${shareLink}" target="_blank">${shareLink}</a>
-                            <button class="copy-button" onclick="copyText('share-link-${file.id}')">复制链接</button>`;
+                        statusHtml += `<br>分享链接：<a href="${shareLink}" target="_blank" id="share-link-${file.id}">${shareLink}</a>
+                            <button class="copy-button" onclick="copyText('share-link-${file.id}')">
+                                <i class="fas fa-link"></i>复制链接
+                            </button>`;
                         
                         if (file.shareInfo.type === 'protected' && file.shareInfo.extractCode) {
                             statusHtml += `<br>提取码：<span id="extract-code-${file.id}">${file.shareInfo.extractCode}</span>
-                                <button class="copy-button" onclick="copyText('extract-code-${file.id}')">复制提取码</button>`;
+                                <button class="copy-button" onclick="copyText('extract-code-${file.id}')">
+                                    <i class="fas fa-copy"></i>复制提取码
+                                </button>`;
                         }
                     }
                     
@@ -1358,6 +1418,7 @@
             if (data.code === 0) {
                 showMessage('文件删除成功', 'success');
                 loadFileList();
+                loadRecycleBin();
             } else {
                 showMessage('删除失败: ' + data.message, 'error');
             }
@@ -1366,8 +1427,9 @@
         }
     }
 
-    function previewImage(filename, originalName) {
-        if (!sessionId) {
+    async function previewImage(filename, originalName) {
+        const token = localStorage.getItem('token')
+        if (!token) {
             alert('请先登录');
             return;
         }
@@ -1376,46 +1438,59 @@
         const previewImage = document.getElementById('preview-image');
         const overlay = document.getElementById('overlay');
         
-        // 添加会话ID到图片源URL
-        const xhr = new XMLHttpRequest();
-        xhr.open('GET', `/download/${filename}`, true);
-        xhr.setRequestHeader('X-Session-ID', sessionId);
-        xhr.responseType = 'blob';
-        
-        xhr.onload = function() {
-            if (xhr.status === 200) {
-                const imageUrl = URL.createObjectURL(xhr.response);
-                previewImage.src = imageUrl;
-            } else {
-                alert('加载图片失败');
-                closeImagePreview();
-            }
-        };
-        
-        xhr.onerror = function() {
-            alert('加载图片失败');
-            closeImagePreview();
-        };
-        
-        xhr.send();
-        
-        // 显示预览区域
-        imagePreview.style.display = 'block';
-        overlay.style.display = 'block';
-        
-        // 添加 Esc 键监听
-        const escHandler = function(event) {
-            if (event.key === 'Escape') {
-                closeImagePreview();
-            }
-        };
-        document.addEventListener('keydown', escHandler);
-        
-        // 点击遮罩层也可以关闭预览
-        overlay.onclick = closeImagePreview;
-        
-        // 保存事件监听器引用以便后续移除
-        window.currentEscHandler = escHandler;
+        try{
+            // 向Master请求下载地址
+            const requestUrl = `/download/${encodeURIComponent(filename)}`;
+
+            const res = await fetch(requestUrl, {
+                headers: {'Authorization': 'Bearer '+ token}
+            });
+
+            if(res.status === 404)throw new Error("接口不存在，请检查Master路由");
+
+            const result = await res.json();
+            if(result.code != 0)throw new Error(result.message);
+            const downloadUrl = `${result.data.downloadUrl}?token=${result.data.token}`;
+            previewImage.src = '';
+            previewImage.alt = '正在加载图片...';
+
+            // 显示预览区域和遮罩层
+            imagePreview.style.display = 'block';
+            overlay.style.display = 'block';
+
+            const imgRes = await fetch(downloadUrl);
+            if (!imgRes.ok) throw new Error("从存储节点获取图片失败");
+            
+            const blob = await imgRes.blob();
+            
+            // 生成本地预览 URL 并赋值给 img 标签
+            const imageUrl = URL.createObjectURL(blob);
+            previewImage.src = imageUrl;
+            previewImage.alt = originalName;
+
+             // 内存泄漏防护：当图片加载完成后，释放 Blob URL
+            previewImage.onload = function() {
+                URL.revokeObjectURL(imageUrl);
+            };
+
+            // 事件绑定：Esc 键关闭
+            const escHandler = function(event) {
+                if (event.key === 'Escape') {
+                    closeImagePreview();
+                }
+            };
+            document.addEventListener('keydown', escHandler);
+            
+            // 事件绑定：点击遮罩层关闭
+            overlay.onclick = closeImagePreview;
+            
+            // 保存事件监听器引用以便后续移除
+            window.currentEscHandler = escHandler;
+        }catch(error){
+            console.error('图片预览失败:', error);
+            alert('预览失败: ' + error.message);
+            closeImagePreview(); // 失败时自动关闭预览框
+        }
     }
 
     function closeImagePreview() {
@@ -1480,6 +1555,10 @@
     function closeShareDialog() {
         document.querySelector('.share-dialog').style.display = 'none';
         document.querySelector('.overlay').style.display = 'none';
+        const btnContainer = document.getElementById('dialogButtonsContainer');
+        if(btnContainer){
+            btnContainer.style.display = 'flex';
+        }
         currentShareFile = null;
         selectedUserId = null;
     }
@@ -1614,6 +1693,10 @@
             if (result.code === 0) {
                 // 显示分享信息
                 const responseData = result.data;
+                const btnContainer = document.getElementById('dialogButtonsContainer');
+                if(btnContainer){
+                    btnContainer.style.display = 'none';
+                }
                 document.querySelector('.share-options').style.display = 'none';
                 document.querySelector('.share-info').style.display = 'block';
                 
@@ -1635,8 +1718,6 @@
                         extractCodeContainer.style.display = 'none';
                     }
                 }
-                
-                // 更新文件列表中的分享状态
                 loadFileList();
             } else {
                 showMessage(result.message, 'error');
@@ -1648,14 +1729,39 @@
     }
 
     function switchTab(tabId) {
+
         document.getElementById('file-list').style.display = tabId === 'my-files' ? 'block' : 'none';
+        document.getElementById('file-list-title').style.display= tabId === 'my-files' ? 'block' : 'none';
+
         document.getElementById('shared-with-me-section').style.display = tabId === 'shared-with-me' ? 'block' : 'none';
+
+        document.getElementById('recycle-bin-section').style.display = tabId === 'recycle-bin' ? 'block' : 'none';
+        // 处理按钮高亮
+        updateActiveButton(tabId);
     }
 
-    // 🌟 新增：加载与我共享列表
+
+    function updateActiveButton(tabId){
+        const myBtn = document.getElementById('btn-my-files');
+        const sharedBtn = document.getElementById('btn-shared');
+        const recycleBtn = document.getElementById('btn-recycle-bin');
+
+        myBtn.classList.remove('active');
+        sharedBtn.classList.remove('active');
+        recycleBtn.classList.remove('active');
+
+        if (tabId === 'my-files') {
+            myBtn.classList.add('active');
+        } else if(tabId === 'shared-with-me'){
+            sharedBtn.classList.add('active');
+        }else{
+            recycleBtn.classList.add('active');
+        }
+    }
+    //加载与我共享列表
     async function loadSharedWithMeList() {
         try {
-            const res = await fetch('/api/share/received', {
+            const res = await fetch('/share/received', {
                 headers: { 'Authorization': 'Bearer ' + token }
             });
             const result = await res.json();
@@ -1682,24 +1788,127 @@
         } catch (e) { console.error(e); }
     }
 
-    // 复制并关闭
-    function copyAndClose(elementId) {
-        const text = document.querySelector(`#${elementId}`).textContent;
-        
-        if (navigator.clipboard && window.isSecureContext) {
-            navigator.clipboard.writeText(text).then(() => {
-                showMessage('复制成功', 'success');
-                closeShareDialog();
-            }).catch(err => {
-                fallbackCopyTextAndClose(text);
+    // 加载回收站列表
+    async function loadRecycleBin(){
+        try{
+            const res = await fetch('/recycle_bin', {
+                headers: {
+                    'Authorization': 'Bearer '+token
+                }
+            })
+            const result = await res.json();
+            const listDiv = document.getElementById('recycle-list');
+            listDiv.innerHTML = '';
+
+            if(result.data.length === 0){
+                return;
+            }
+
+            result.data.forEach(file=>{
+                listDiv.innerHTML = `
+                    <div class="file-item" style="border-left: 4px solid #f44336;">
+                        <div class="file-header">
+                            <span class="file-name" style="color: #666; text-decoration: line-through;">${file.originalName}</span>
+                            <div class="file-actions">
+                                <button class="action-button preview-button" onclick="restoreFile(${file.id})">
+                                    <i class="fas fa-undo"></i> 恢复
+                                </button>
+                                <button class="action-button delete-button" onclick="hardDeleteFile(${file.id})">
+                                    <i class="fas fa-trash-alt"></i> 彻底删除
+                                </button>
+                            </div>
+                        </div>
+                        <div class="file-info">
+                            <span>大小: ${formatSize(file.size)}</span>
+                            <span style="color: #f44336;">删除时间: ${file.deletedAt}</span>
+                        </div>
+                    </div>
+                `;
             });
-        } else {
-            fallbackCopyTextAndClose(text);
+        }catch(error){
+            console.error(e);
         }
     }
 
-    // 传统复制方法并关闭
-    function fallbackCopyTextAndClose(text) {
+    // 恢复文件
+    async function restoreFile(fileId){
+        if(!confirm("确定恢复这个文件吗？"))return;
+        try{
+            const res = await fetch('/restore',{
+                method: 'POST',
+                headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token},
+                body: JSON.stringify({fileId: fileId})
+            });
+            const data = await res.json();
+            if(data.code === 0){
+                showMessage('文件已恢复', 'success');
+                loadRecycleBin();
+                loadFileList();
+            }else{
+                showMessage(data.message, 'error');
+            }
+        }catch(error){
+            showMessage('恢复失败', 'error');
+        }
+    }
+
+    // 彻底删除
+    async function hardDeleteFile(fileId){
+        if(!confirm('彻底删除后将无法恢复，确定要删除吗？'))return;
+
+        try {
+            const res = await fetch('/hard_delete', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+                body: JSON.stringify({ fileId: fileId })
+            });
+            const data = await res.json();
+            if (data.code === 0) {
+                showMessage('已彻底删除', 'success');
+                loadRecycleBin();
+            } else {
+                showMessage(data.message, 'error');
+            }
+        } catch (e) { showMessage('删除失败', 'error'); }
+    }
+    
+
+    // 一键复制所有分享信息
+    function copyAllShareInfo() {
+        const link = document.querySelector('#shareLink').textContent;
+        const extractCodeContainer = document.querySelector('#extractCodeContainer');
+        
+        let copyText = '';
+        
+        // 如果是定向分享，其实没有链接，直接提示
+        if (link.includes('已成功发送')) {
+            closeShareDialog();
+            return;
+        }
+
+        // 智能拼接复制文本
+        if (extractCodeContainer.style.display !== 'none') {
+            const code = document.querySelector('#extractCode').textContent;
+            copyText = `分享链接：${link}\n提取码: ${code}\n`;
+        } else {
+            copyText = `分享链接：${link}\n`;
+        }
+        
+        // 执行复制
+        if (navigator.clipboard && window.isSecureContext) {
+            navigator.clipboard.writeText(copyText).then(() => {
+                showMessage('复制成功，快去分享给好友吧！', 'success');
+                // 复制成功后可以自动关闭，也可以不关闭，看你喜好。这里选择不自动关闭，让用户自己点关闭。
+            }).catch(err => {
+                fallbackCopyText(copyText);
+            });
+        } else {
+            fallbackCopyText(copyText);
+        }
+    }
+
+     // 传统复制方法
+     function fallbackCopyText(text) {
         const textArea = document.createElement('textarea');
         textArea.value = text;
         textArea.style.position = 'fixed';
@@ -1713,17 +1922,15 @@
         try {
             const successful = document.execCommand('copy');
             if (successful) {
-                showMessage('复制成功', 'success');
+                showMessage('复制成功，快去分享给好友吧！', 'success');
             } else {
-                showMessage('复制失败，请手动复制', 'error');
+                showMessage('复制失败，请手动选中复制', 'error');
             }
         } catch (err) {
-            console.error('复制失败:', err);
-            showMessage('复制失败，请手动复制', 'error');
+            showMessage('复制失败，请手动选中复制', 'error');
         }
         
         document.body.removeChild(textArea);
-        closeShareDialog();
     }
 
     // 显示消息提示
@@ -1752,10 +1959,9 @@
     // 获取分享类型的中文描述
     function getShareTypeText(shareType) {
         const types = {
-            'private': '私有',
             'public': '完全公开',
             'protected': '需要提取码',
-            'user': '指定用户'
+            'specific': '指定用户'
         };
         return types[shareType] || shareType;
     }

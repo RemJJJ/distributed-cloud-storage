@@ -7,6 +7,8 @@
 #include "base/ThreadPool.h"
 #include "db/MySQLPool.h"
 #include "db/MySQLStatement.h"
+#include "net/EventLoop.h"
+#include "net/TimerId.h"
 #include <atomic>
 #include <cstdio>
 #include <experimental/filesystem>
@@ -21,23 +23,15 @@
 #include <unordered_map>
 namespace fs = std::filesystem;
 
-class HttpUploadHandler : public BaseHandler {
+class MasterHttpHandler : public BaseHandler {
   private:
-    ThreadPool threadPool_;           // 线程池
-    std::string uploadDir_;           // 上传目录
-    std::string mappingFile_;         // 文件名映射文件
-    std::atomic<int> activeRequests_; // 活跃请求计数
-    std::mutex mappingMutex_;         // 保护文件名映射的互斥锁
-    std::map<std::string, std::string>
-        filenameMapping_; // <服务器文件名, 原始文件名>
+    ThreadPool threadPool_; // 线程池
+    std::string uploadDir_; // 上传目录
 
   public:
-    HttpUploadHandler(int numThreads);
+    MasterHttpHandler(int numThreads);
 
-    ~HttpUploadHandler();
-
-    // 加载文件名映射
-    void loadFilenameMapping();
+    ~MasterHttpHandler();
 
     ///@brief 初始化路由，覆盖
     void initRoutes() override;
@@ -45,17 +39,16 @@ class HttpUploadHandler : public BaseHandler {
     ///@brief 链接回调，覆盖
     void onConnection(const TcpConnectionPtr &conn) override;
 
+    void startGC(EventLoop *loop) {
+        loop->runEvery(60.0,
+                       std::bind(&MasterHttpHandler::processGarbageCollection,
+                                 this, loop));
+        LOG_INFO << "Async garbage collection timer start";
+    }
+
   private:
-    void saveFilenameMapping();
-
-    void saveFilenameMappingInternal();
-
-    void loadFilenameMappingInternal();
-
     void addFilenameMapping(const std::string &serverFilename,
                             const std::string &originalFilename);
-
-    std::string generateUniqueFilename(const std::string &prefix);
 
     bool handleFavicon(const TcpConnectionPtr &conn, HttpRequest &req,
                        std::shared_ptr<HttpResponse> &resp);
@@ -63,12 +56,5 @@ class HttpUploadHandler : public BaseHandler {
     bool handleIndex(const TcpConnectionPtr &conn, HttpRequest &req,
                      std::shared_ptr<HttpResponse> &resp);
 
-    bool handleListFiles(const TcpConnectionPtr &conn, HttpRequest &req,
-                         std::shared_ptr<HttpResponse> &resp);
-
-    bool handleFileUpload(const TcpConnectionPtr &conn, HttpRequest &req,
-                          std::shared_ptr<HttpResponse> &resp);
-
-    bool handleDownload(const fn::TcpConnectionPtr &conn, fn::HttpRequest &req,
-                        std::shared_ptr<fn::HttpResponse> &resp);
+    void processGarbageCollection(EventLoop *loop);
 };

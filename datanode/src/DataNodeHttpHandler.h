@@ -177,5 +177,9 @@ class DataNodeHttpHandler : public BaseHandler {
     bool handleFileDownload(const TcpConnectionPtr &conn, HttpRequest &req,
                             std::shared_ptr<HttpResponse> &resp);
 
+    /// @brief 处理文件删除
+    bool handleDeleteFile(const TcpConnectionPtr &conn, HttpRequest &req,
+                          std::shared_ptr<HttpResponse> &resp);
+
     std::string getMimeType(const std::string &filename);
 };
