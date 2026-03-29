@@ -169,9 +169,12 @@ bool DataNodeHttpHandler::handleFileUpload(
 
     uint64_t fileID = 0;
     std::string serverFilename;
+    std::string originalFilename;
+    std::string created_time;
     std::string uploadToken = authHeader.substr(7);
-    if (!TokenManager::instance().verifyUploadToken(uploadToken, fileID,
-                                                    serverFilename)) {
+    if (!TokenManager::instance().verifyUploadToken(
+            uploadToken, fileID, originalFilename, serverFilename,
+            created_time)) {
         sendError(resp, "上传 Token 无效或已过期",
                   HttpResponse::k401Unauthorized, conn);
         return true;
@@ -230,12 +233,15 @@ bool DataNodeHttpHandler::handleFileUpload(
         auto file_id = uploadContext->getFileID();
         auto server_filename = uploadContext->getFilename();
         auto stored_size = uploadContext->getTotalBytes();
+
         json respJson = {{"code", 0},
                          {"msg", "Upload success"},
-                         {"data",
-                          {{"file_id", file_id},
-                           {"server_filename", server_filename},
-                           {"stored_size", stored_size}}}};
+                         {"file",
+                          {{"id", file_id},
+                           {"name", server_filename.substr(8)},
+                           {"originalName", originalFilename},
+                           {"size", stored_size},
+                           {"createdAt", created_time}}}};
         //   respJson["data"]["file_md5"] = uploadContext->getFileMd5();
         // 优化：只 dump 一次
         std::string bodyStr = respJson.dump();

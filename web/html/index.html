@@ -572,6 +572,22 @@
             align-items: center;
             margin-bottom: 20px;
         }
+        .category-tag {
+            padding: 6px 15px;
+            background-color: #e0e0e0;
+            color: #333;
+            border-radius: 20px;
+            cursor: pointer;
+            font-size: 0.9em;
+            transition: all 0.3s ease;
+        }
+        .category-tag:hover {
+            background-color: #d0d0d0;
+        }
+        .category-tag.active {
+            background-color: #2196F3;
+            color: white;
+        }
     </style>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.4/css/all.min.css">
 </head>
@@ -627,8 +643,10 @@
                     <i class="fas fa-trash">回收站</i> 
                 </button>    
             </div>
+
+            
         </div>
-        
+
         <div class="upload-form">
             <input type="file" id="file-input">
             <button class="upload-button" onclick="uploadFile()">
@@ -638,8 +656,50 @@
                 <div class="progress-bar"></div>
             </div>
         </div>
-        <h2 id="file-list-title">已上传文件列表</h2>
-        <div id="file-list"></div>
+
+        <div id="my-files-section" style="display: block;">
+            <h2 id="file-list-title">已上传文件列表</h2>
+            
+
+            <!-- 搜索框 -->
+            <div class="search-bar" style="margin-bottom: 20px; display: flex; gap: 10px;">
+                <input type="text" id="global-search-input" placeholder="搜索文件..."
+                    style="flex: 1; padding: 10px; border-radius: 6px; border: 1px solid #ccc;">
+                <button class="dialog-button primary" onclick="performSearch()">
+                    <i class="fas fa-search"></i> 搜索
+                </button>
+            </div>
+            <!-- 分类标签 -->
+            <div id="category-tags" style="margin-bottom: 20px; display: flex; gap: 10px; flex-wrap: wrap;">
+                <span class="category-tag active" onclick="filterByType('')">全部</span>
+                <span class="category-tag" onclick="filterByType('image')"><i class="fas fa-image"></i> 图片</span>
+                <span class="category-tag" onclick="filterByType('video')"><i class="fas fa-video"></i> 视频</span>
+                <span class="category-tag" onclick="filterByType('document')"><i class="fas fa-file-word"></i> 文档</span>
+                <span class="category-tag" onclick="filterByType('code')"><i class="fas fa-code"></i> 代码</span>
+            </div>
+
+            <div id="file-list"></div>
+        
+        </div>
+        
+        <!--与我共享区域 -->
+        <div id="shared-with-me-section" style="display: none;">
+            <h2>别人分享给我的文件</h2>
+            <div id="shared-list"></div>
+        
+            
+        </div>
+        <div id="recycle-bin-section" style="display: none;">
+            <h2>回收站</h2>
+            <p style="color: #666; text-align: center;">被删除的文件会保存在这里，您可以恢复或彻底删除它们。</p>
+            <div id="recycle-list"></div>
+            
+        </div>
+
+        
+        
+        
+        
 
         <!-- 添加视频播放器和遮罩层 -->
         <div class="overlay" id="overlay"></div>
@@ -723,16 +783,6 @@
                 </button>
             </div>
         </div>
-        <!-- 🌟 新增：与我共享区域 -->
-        <div id="shared-with-me-section" style="display: none;">
-            <h2>别人分享给我的文件</h2>
-            <div id="shared-list"></div>
-        </div>
-        <div id="recycle-bin-section" style="display: none;">
-            <h2>回收站</h2>
-            <p style="color: #666; text-align: center;">被删除的文件会保存在这里，您可以恢复或彻底删除它们。</p>
-            <div id="recycle-list"></div>
-        </div>
     </div>
 
     <script>
@@ -742,6 +792,59 @@
     // 会话管理
     let token = localStorage.getItem('token');
     let currentUser = localStorage.getItem('username');
+
+    let currentKeyword = '';
+    let currentType = '';
+    let currentTab = 'my-files'; // 记录当前所在的 Tab
+
+    let allFilesCache = [];
+
+    // 触发搜索
+    function performSearch(){
+        currentKeyword = document.getElementById('global-search-input').value.trim();
+           // 小数据：前端过滤
+        if (allFilesCache.length < 200) {
+            applyFrontendFilter();
+        } else {
+            // 大数据：走后端
+            loadFilesWithQuery();
+        }
+    }
+
+    function loadFilesWithQuery() {
+        let url = "/files?";
+
+        if (currentKeyword) {
+            url += "keyword=" + encodeURIComponent(currentKeyword) + "&";
+        }
+
+        if (currentType) {
+            url += "type=" + currentType;
+        }
+
+        fetch(url, {
+            headers: {
+                "Authorization": "Bearer " + localStorage.getItem("token")
+            }
+        })
+        .then(res => res.json())
+        .then(data => {
+            renderFileList(data.files);
+        });
+    }
+
+    // 触发分类过滤
+    function filterByType(type){
+        currentType = type;
+
+        // 更新UI选中
+        document.querySelectorAll('.category-tag').forEach(tag=>{
+            tag.classList.remove('active');
+        });
+        event.currentTarget.classList.add('active');
+
+        applyFrontendFilter();
+    }
 
     function downloadFile(filename, originalName) {
         if (!token) {
@@ -912,148 +1015,155 @@
 }
 
     async function uploadFile() {
-    const userToken = localStorage.getItem('token'); // 获取用户登录 Token
-    if (!userToken) {
-        alert('请先登录');
-        return;
-    }
-
-    const fileInput = document.getElementById('file-input');
-    const file = fileInput.files[0];
-    if (!file) {
-        alert('请选择文件');
-        return;
-    }
-
-    const progress = document.querySelector('.progress');
-    const progressBar = document.querySelector('.progress-bar');
-    progress.style.display = 'block';
-    
-    try {
-        // 计算文件MD5
-        progressBar.textContent = '正在扫描文件 (计算MD5)...';
-        progressBar.style.width = '10%';
-        
-        const fileMd5 = await calculateMD5(file, (percent) => {
-            // 扫描进度 (只占前 10% 的进度条视觉效果)
-            progressBar.style.width = (percent * 0.1) + '%'; 
-        });
-
-        // ==========================================
-        // 第一阶段：向 Master 申请上传地址
-        // ==========================================
-        progressBar.textContent = '正在请求服务器...';
-
-        const requestResponse = await fetch('/upload', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Authorization': 'Bearer ' + userToken // 验证用户身份
-            },
-            body: JSON.stringify({
-                original_filename: file.name,
-                file_size: file.size,
-                file_type: file.type || 'application/octet-stream',
-                md5: fileMd5
-            })
-        });
-
-        const requestData = await requestResponse.json();
-
-        if(requestData.code ===1){
-            progressBar.style.width = '100%';
-            progressBar.textContent = '秒传成功！';
-            progressBar.style.backgroundColor = '#4CAF50';
-            alert('极速秒传成功！');
-            loadFileList();
-            setTimeout(() => { progress.style.display = 'none'; }, 1500);
-            return; // 直接结束，不需要走 DataNode 了！
-        }
-        
-        if (requestData.code !== 0) {
-            throw new Error(requestData.message || '获取上传地址失败');
+        const userToken = localStorage.getItem('token'); // 获取用户登录 Token
+        if (!userToken) {
+            alert('请先登录');
+            return;
         }
 
-        // 拿到 Master 分配的 DataNode 地址和专属上传 Token
-        const uploadUrl = requestData.data.uploadUrl;
-        const uploadToken = requestData.data.uploadToken;
+        const fileInput = document.getElementById('file-input');
+        const file = fileInput.files[0];
+        if (!file) {
+            alert('请选择文件');
+            return;
+        }
 
-        // ==========================================
-        // 第二阶段：向 DataNode 真正上传文件
-        // ==========================================
-        progressBar.textContent = '正在上传...';
+        const progress = document.querySelector('.progress');
+        const progressBar = document.querySelector('.progress-bar');
+        progress.style.display = 'block';
         
-        const xhr = new XMLHttpRequest();
-        xhr.open('POST', uploadUrl, true); // 注意：这里用的是 Master 返回的动态 URL！
+        try {
+            // 计算文件MD5
+            progressBar.textContent = '正在扫描文件 (计算MD5)...';
+            progressBar.style.width = '10%';
+            
+            const fileMd5 = await calculateMD5(file, (percent) => {
+                // 扫描进度 (只占前 10% 的进度条视觉效果)
+                progressBar.style.width = (percent * 0.1) + '%'; 
+            });
 
-        xhr.timout = 5000;
+            // ==========================================
+            // 第一阶段：向 Master 申请上传地址
+            // ==========================================
+            progressBar.textContent = '正在请求服务器...';
 
-        xhr.ontimeout = function(){
-            console.error("连接存储节点超时！");
-            alert("存储节点暂时无响应，请稍后重试。");
-            progress.style.display = 'none';
-            progressBar.style.width = '0%';
-        };
-        
-        // ⚠️ 极其重要：这里带的是 Master 刚刚签发的专属 uploadToken，而不是用户的登录 Token！
-        xhr.setRequestHeader('Authorization', 'Bearer ' + uploadToken); 
-        // 如果你的 DataNode 还需要原文件名，可以保留这个头，否则可以删掉
-        xhr.setRequestHeader('X-File-Name', encodeURIComponent(file.name));
-        xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
+            const requestResponse = await fetch('/upload', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': 'Bearer ' + userToken // 验证用户身份
+                },
+                body: JSON.stringify({
+                    original_filename: file.name,
+                    file_size: file.size,
+                    file_type: file.type || 'application/octet-stream',
+                    md5: fileMd5
+                })
+            });
 
-        // 监听上传进度
-        xhr.upload.onprogress = function(e) {
-            if (e.lengthComputable) {
-                const percentComplete = 10 + Math.round((e.loaded / e.total) * 90);
-                progressBar.style.width = percentComplete + '%';
-                progressBar.textContent = percentComplete + '%';
+            const requestData = await requestResponse.json();
+
+            if(requestData.code ===1){
+                progressBar.style.width = '100%';
+                progressBar.textContent = '秒传成功！';
+                progressBar.style.backgroundColor = '#4CAF50';
+                alert('极速秒传成功！');
+
+                allFilesCache.unshift(requestData.file);
+                applyFrontendFilter();
+                setTimeout(() => { progress.style.display = 'none'; }, 1500);
+                return; // 直接结束，不需要走 DataNode 了！
             }
-        };
-
-        // 监听上传完成
-        xhr.onload = function() {
-            if (xhr.status === 200) {
-                alert('上传成功');
-                loadFileList(); // 刷新文件列表
-            } else {
-                try {
-                    const response = JSON.parse(xhr.responseText);
-                    alert('上传失败: ' + (response.message || xhr.statusText));
-                } catch (e) {
-                    alert('上传失败: 服务器返回异常状态 ' + xhr.status);
-                }
+            
+            if (requestData.code !== 0) {
+                throw new Error(requestData.message || '获取上传地址失败');
             }
-            // 恢复 UI 状态
-            setTimeout(() => {
+
+            // 拿到 Master 分配的 DataNode 地址和专属上传 Token
+            const uploadUrl = requestData.data.uploadUrl;
+            const uploadToken = requestData.data.uploadToken;
+
+            // ==========================================
+            // 第二阶段：向 DataNode 真正上传文件
+            // ==========================================
+            progressBar.textContent = '正在上传...';
+            
+            const xhr = new XMLHttpRequest();
+            xhr.open('POST', uploadUrl, true); // 注意：这里用的是 Master 返回的动态 URL！
+
+            xhr.timout = 5000;
+
+            xhr.ontimeout = function(){
+                console.error("连接存储节点超时！");
+                alert("存储节点暂时无响应，请稍后重试。");
                 progress.style.display = 'none';
                 progressBar.style.width = '0%';
-                progressBar.textContent = '';
-                fileInput.value = '';  // 清空文件选择
-            }, 1000);
-        };
+            };
+            
+            // ⚠️ 极其重要：这里带的是 Master 刚刚签发的专属 uploadToken，而不是用户的登录 Token！
+            xhr.setRequestHeader('Authorization', 'Bearer ' + uploadToken); 
+            // 如果你的 DataNode 还需要原文件名，可以保留这个头，否则可以删掉
+            xhr.setRequestHeader('X-File-Name', encodeURIComponent(file.name));
+            xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
 
-        // 监听网络错误
-        xhr.onerror = function() {
-            alert('网络错误，无法连接到存储节点！');
+            // 监听上传进度
+            xhr.upload.onprogress = function(e) {
+                if (e.lengthComputable) {
+                    const percentComplete = 10 + Math.round((e.loaded / e.total) * 90);
+                    progressBar.style.width = percentComplete + '%';
+                    progressBar.textContent = percentComplete + '%';
+                }
+            };
+
+            // 监听上传完成
+            xhr.onload = function() {
+                if (xhr.status === 200) {
+                    alert('上传成功');
+                    const response = JSON.parse(xhr.responseText);
+                    const newFile = response.file;
+
+                    allFilesCache.unshift(newFile);
+                    applyFrontendFilter();
+                } else {
+                    try {
+                        const response = JSON.parse(xhr.responseText);
+                        alert('上传失败: ' + (response.message || xhr.statusText));
+                    } catch (e) {
+                        alert('上传失败: 服务器返回异常状态 ' + xhr.status);
+                    }
+                }
+                // 恢复 UI 状态
+                setTimeout(() => {
+                    progress.style.display = 'none';
+                    progressBar.style.width = '0%';
+                    progressBar.textContent = '';
+                    fileInput.value = '';  // 清空文件选择
+                }, 1000);
+            };
+
+            // 监听网络错误
+            xhr.onerror = function() {
+                alert('网络错误，无法连接到存储节点！');
+                progress.style.display = 'none';
+            };
+
+            xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
+            xhr.send(file); // 浏览器会自动将文件以纯二进制流形式发出
+
+        } catch (error) {
+            alert('操作失败: ' + error.message);
             progress.style.display = 'none';
-        };
-
-        xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
-        xhr.send(file); // 浏览器会自动将文件以纯二进制流形式发出
-
-    } catch (error) {
-        alert('操作失败: ' + error.message);
-        progress.style.display = 'none';
-        progressBar.style.width = '0%';
+            progressBar.style.width = '0%';
+        }
     }
-}
 
     function loadFileList() {
         if(!token){
             return;
         }
+        let url = '/files?';
 
-        fetch('/files', {
+        fetch(url, {
             headers: {
                 'Authorization': 'Bearer ' + localStorage.getItem('token')
             }
@@ -1070,131 +1180,170 @@
             return response.json();
         })
         .then(data => {
-            const fileList = document.getElementById('file-list');
-            fileList.innerHTML = '';
-            data.files.forEach(file => {
-                const div = document.createElement('div');
-                div.className = 'file-item';
-                
-                const headerDiv = document.createElement('div');
-                headerDiv.className = 'file-header';
-                
-                const nameSpan = document.createElement('span');
-                nameSpan.className = 'file-name';
-                nameSpan.textContent = file.originalName;
-                
-                const actionsDiv = document.createElement('div');
-                actionsDiv.className = 'file-actions';
-                
-                const fileExtension = file.originalName.split('.').pop().toLowerCase();
-                const isVideo = fileExtension === 'mp4';
-                const isImage = ['jpg', 'jpeg', 'png', 'gif', 'webp'].includes(fileExtension);
-                
-                // 下载按钮
-                const downloadButton = document.createElement('button');
-                downloadButton.className = 'action-button download-button';
-                downloadButton.innerHTML = '<i class="fas fa-download"></i> 下载';
-                downloadButton.onclick = () => downloadFile(file.name, file.originalName);
-                
-                // 预览按钮
-                if (isVideo || isImage) {
-                    const previewButton = document.createElement('button');
-                    previewButton.className = 'action-button preview-button';
-                    previewButton.innerHTML = '<i class="fas fa-eye"></i> 预览';
-                    previewButton.onclick = () => {
-                        if (isVideo) {
-                            playVideo(file.name);
-                        } else {
-                            previewImage(file.name);
-                        }
-                    };
-                    actionsDiv.appendChild(previewButton);
-                }
-                
-                const shareButton = document.createElement('button');
-                shareButton.className = 'action-button share-button';
-                shareButton.innerHTML = '<i class="fas fa-share-alt"></i> 分享';
-                shareButton.onclick = () => openShareDialog(file);
-                actionsDiv.appendChild(shareButton);
-                // 如果有分享信息，添加取消分享按钮
-                if (file.shareInfo) {
-                    const cancelShareButton = document.createElement('button');
-                    cancelShareButton.className = 'action-button cancel-share-button';
-                    cancelShareButton.innerHTML = '<i class="fas fa-times-circle"></i> 取消分享';
-                    cancelShareButton.onclick = () => {
-                        if (confirm('确定要取消分享吗？')) {
-                            cancelShare(file.id);
-                        }
-                    };
-                    actionsDiv.appendChild(cancelShareButton);
-                }
-                
-                const deleteButton = document.createElement('button');
-                deleteButton.className = 'action-button delete-button';
-                deleteButton.innerHTML = '<i class="fas fa-trash"></i> 删除';
-                deleteButton.onclick = () => {
-                    if (confirm('确定要删除这个文件吗？')) {
-                            deleteFile(file.name);
-                    }
-                };
-                actionsDiv.appendChild(deleteButton);
-                actionsDiv.appendChild(downloadButton);
-                
-                headerDiv.appendChild(nameSpan);
-                headerDiv.appendChild(actionsDiv);
-                
-                const infoDiv = document.createElement('div');
-                infoDiv.className = 'file-info';
-                infoDiv.innerHTML = `
-                    <span>大小: ${formatSize(file.size)}</span>
-                    <span>上传时间: ${file.createdAt}</span>
-                `;
-                
-                // 如果有分享信息，显示分享状态
-                if (file.shareInfo) {
-                    const shareStatus = document.createElement('div');
-                    shareStatus.className = 'share-status';
-                    shareStatus.style.marginTop = '10px';
-                    shareStatus.style.color = '#666';
-                    
-                    let shareText = getShareTypeText(file.shareInfo.type);
-                    if (file.shareInfo.type === 'specific' && file.shareInfo.sharedWithUsername) {
-                        shareText += ` (分享给：${file.shareInfo.sharedWithUsername})`;
-                    }
-                    
-                    if (file.shareInfo.expireTime) {
-                        shareText += ` (过期时间：${new Date(file.shareInfo.expireTime).toLocaleString()})`;
-                    }
-                    
-                    let statusHtml = `分享状态：${shareText}`;
-                    
-                    if (file.shareInfo.shareCode) {
-                        const shareLink = `${window.location.origin}/s/${file.shareInfo.shareCode}`;
-                        statusHtml += `<br>分享链接：<a href="${shareLink}" target="_blank" id="share-link-${file.id}">${shareLink}</a>
-                            <button class="copy-button" onclick="copyText('share-link-${file.id}')">
-                                <i class="fas fa-link"></i>复制链接
-                            </button>`;
-                        
-                        if (file.shareInfo.type === 'protected' && file.shareInfo.extractCode) {
-                            statusHtml += `<br>提取码：<span id="extract-code-${file.id}">${file.shareInfo.extractCode}</span>
-                                <button class="copy-button" onclick="copyText('extract-code-${file.id}')">
-                                    <i class="fas fa-copy"></i>复制提取码
-                                </button>`;
-                        }
-                    }
-                    
-                    shareStatus.innerHTML = statusHtml;
-                    infoDiv.appendChild(shareStatus);
-                }
-                
-                div.appendChild(headerDiv);
-                div.appendChild(infoDiv);
-                fileList.appendChild(div);
-            });
+            allFilesCache = data.files || [];
+            applyFrontendFilter();
         })
         .catch(error => {
             console.error('加载文件列表失败:', error);
         });
+    }
+
+    function applyFrontendFilter(){
+        let filtered = allFilesCache
+        // 按 type 过滤
+        if (currentType) {
+            filtered = filtered.filter(file => {
+                const name = file.originalName.toLowerCase();
+
+                if (currentType === "image") {
+                    return name.endsWith(".jpg") || name.endsWith(".png") || name.endsWith(".gif");
+                }
+                if (currentType === "video") {
+                    return name.endsWith(".mp4") || name.endsWith(".avi") || name.endsWith(".mkv");
+                }
+                if (currentType === "document") {
+                    return name.endsWith(".pdf") || name.includes(".doc") || name.endsWith(".txt");
+                }
+                if (currentType === "code") {
+                    return name.endsWith(".cpp") || name.endsWith(".h") || name.endsWith(".py") || name.endsWith(".js");
+                }
+
+                return true;
+            });
+        }
+
+        // 按 keyword 过滤
+        if (currentKeyword) {
+            filtered = filtered.filter(file =>
+                file.originalName.toLowerCase().includes(currentKeyword.toLowerCase())
+            );
+        }
+
+        renderFileList(filtered);
+    }
+
+    function renderFileList(files) {
+        const fileList = document.getElementById('file-list');
+        fileList.innerHTML = '';
+
+        if (!files || files.length === 0) {
+            fileList.innerHTML = "<p style='color:#999;'>暂无文件</p>";
+            return;
+        }
+
+        files.forEach(file => {
+            const div = document.createElement('div');
+            div.className = 'file-item';
+
+            // ===== header =====
+            const headerDiv = document.createElement('div');
+            headerDiv.className = 'file-header';
+
+            const nameSpan = document.createElement('span');
+            nameSpan.className = 'file-name';
+            nameSpan.textContent = file.originalName;
+
+            const actionsDiv = document.createElement('div');
+            actionsDiv.className = 'file-actions';
+
+            // ===== 文件类型判断 =====
+            const ext = file.originalName.split('.').pop().toLowerCase();
+            const isVideo = ext === 'mp4';
+            const isImage = ['jpg','jpeg','png','gif','webp'].includes(ext);
+
+            // ===== 下载 =====
+            const downloadButton = document.createElement('button');
+            downloadButton.className = 'action-button download-button';
+            downloadButton.innerHTML = '<i class="fas fa-download"></i> 下载';
+            downloadButton.onclick = () => downloadFile(file.name, file.originalName);
+
+            // ===== 预览 =====
+            if (isVideo || isImage) {
+                const previewButton = document.createElement('button');
+                previewButton.className = 'action-button preview-button';
+                previewButton.innerHTML = '<i class="fas fa-eye"></i> 预览';
+                previewButton.onclick = () => {
+                    console.log(file.name);
+                    isVideo ? playVideo(file.name) : previewImage(file.name);
+                };
+                actionsDiv.appendChild(previewButton);
+            }
+
+            // ===== 分享 =====
+            const shareButton = document.createElement('button');
+            shareButton.className = 'action-button share-button';
+            shareButton.innerHTML = '<i class="fas fa-share-alt"></i> 分享';
+            shareButton.onclick = () => openShareDialog(file);
+            actionsDiv.appendChild(shareButton);
+
+            // ===== 取消分享 =====
+            if (file.shareInfo) {
+                const cancelShareButton = document.createElement('button');
+                cancelShareButton.className = 'action-button cancel-share-button';
+                cancelShareButton.innerHTML = '<i class="fas fa-times-circle"></i> 取消分享';
+                cancelShareButton.onclick = () => {
+                    if (confirm('确定要取消分享吗？')) {
+                        cancelShare(file.id);
+                    }
+                };
+                actionsDiv.appendChild(cancelShareButton);
+            }
+
+            // ===== 删除 =====
+            const deleteButton = document.createElement('button');
+            deleteButton.className = 'action-button delete-button';
+            deleteButton.innerHTML = '<i class="fas fa-trash"></i> 删除';
+            deleteButton.onclick = () => {
+                if (confirm('确定要删除这个文件吗？')) {
+                    deleteFile(file.name);
+                }
+            };
+
+            actionsDiv.appendChild(deleteButton);
+            actionsDiv.appendChild(downloadButton);
+
+            headerDiv.appendChild(nameSpan);
+            headerDiv.appendChild(actionsDiv);
+
+            // ===== 信息 =====
+            const infoDiv = document.createElement('div');
+            infoDiv.className = 'file-info';
+            infoDiv.innerHTML = `
+                <span>大小: ${formatSize(file.size)}</span>
+                <span>上传时间: ${file.createdAt ? file.createdAt : getCurrentTime()}</span>
+            `;
+
+            // ===== 分享信息 =====
+            if (file.shareInfo) {
+                const shareStatus = document.createElement('div');
+                shareStatus.className = 'share-status';
+
+                let text = getShareTypeText(file.shareInfo.type);
+
+                if (file.shareInfo.type === 'specific' && file.shareInfo.sharedWithUsername) {
+                    text += ` (分享给：${file.shareInfo.sharedWithUsername})`;
+                }
+
+                if (file.shareInfo.expireTime) {
+                    text += ` (过期：${new Date(file.shareInfo.expireTime).toLocaleString()})`;
+                }
+
+                shareStatus.innerHTML = `分享状态：${text}`;
+                infoDiv.appendChild(shareStatus);
+            }
+
+            div.appendChild(headerDiv);
+            div.appendChild(infoDiv);
+
+            fileList.appendChild(div);
+        });
+    }
+
+    function getCurrentTime(){
+        const now = new Date();
+        const pad = n => n.toString().padStart(2, '0');
+        return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ` +
+           `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
     }
 
     function formatSize(bytes) {
@@ -1730,8 +1879,9 @@
 
     function switchTab(tabId) {
 
-        document.getElementById('file-list').style.display = tabId === 'my-files' ? 'block' : 'none';
-        document.getElementById('file-list-title').style.display= tabId === 'my-files' ? 'block' : 'none';
+        document.getElementById('category-tags').style.display =(tabId === 'my-files') ? 'flex' : 'none';
+
+        document.getElementById('my-files-section').style.display = tabId === 'my-files' ? 'block' : 'none';
 
         document.getElementById('shared-with-me-section').style.display = tabId === 'shared-with-me' ? 'block' : 'none';
 
@@ -1761,7 +1911,9 @@
     //加载与我共享列表
     async function loadSharedWithMeList() {
         try {
-            const res = await fetch('/share/received', {
+            let url = '/share/received?'
+            if (currentKeyword) url += `keyword=${encodeURIComponent(currentKeyword)}`;
+            const res = await fetch(url, {
                 headers: { 'Authorization': 'Bearer ' + token }
             });
             const result = await res.json();
@@ -1805,7 +1957,7 @@
             }
 
             result.data.forEach(file=>{
-                listDiv.innerHTML = `
+                listDiv.innerHTML += `
                     <div class="file-item" style="border-left: 4px solid #f44336;">
                         <div class="file-header">
                             <span class="file-name" style="color: #666; text-decoration: line-through;">${file.originalName}</span>

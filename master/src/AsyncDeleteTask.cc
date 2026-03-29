@@ -101,6 +101,31 @@ void AsyncDeleteTask::onMessage(const fn::TcpConnectionPtr &conn,
         // 如果 DataNode 返回 404 (文件本来就不存在)，其实也可以认为是删除成功了
         if (response.find("HTTP/1.1 404") != std::string::npos) {
             LOG_WARN << "DataNode report file not exists, FileID: " << fileId_;
+            // 执行数据库清理
+            auto mysql = db::MySQLPool::instance().getConnection();
+            if (mysql) {
+                std::string delShareSql =
+                    "DELETE FROM file_shares WHERE file_id = ?";
+                db::MySQLStatement delShareStmt(*mysql, delShareSql);
+                delShareStmt.bindInt(fileId_);
+                if (!delShareStmt.execute()) {
+                    LOG_ERROR << "Sharefiles database delete error: "
+                              << delShareStmt.getError();
+                }
+
+                std::string delFileSql = "DELETE FROM files WHERE id = ?";
+                db::MySQLStatement delFileStmt(*mysql, delFileSql);
+                delFileStmt.bindInt(fileId_);
+                if (delFileStmt.execute()) {
+                    LOG_INFO << "Database delete complete, FileID: " << fileId_;
+                } else {
+                    LOG_ERROR << "Files database delete error: "
+                              << delFileStmt.getError();
+                }
+            } else {
+                LOG_ERROR << "Get database connection failed, FileID: "
+                          << fileId_;
+            }
             // 这里你可以选择复用上面的数据库清理逻辑
         } else {
             LOG_ERROR << "DataNode physical delete failed, 响应: "

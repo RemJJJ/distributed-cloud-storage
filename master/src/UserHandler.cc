@@ -813,22 +813,58 @@ bool UserHandler::handleListSharedWithMe(
         return true;
     }
 
+    std::string keyword = urlDecode(req.getQuery("keyword"));
+    std::string fileType = req.getQuery("type");
+
     auto mysql = db::MySQLPool::instance().getConnection();
-    // 联合查询：查出别人分享给我的文件，以及分享者的名字
-    std::string sql =
-        "SELECT f.filename, f.original_filename, f.file_size, u.username, "
-        "s.created_at "
-        "FROM file_shares s "
-        "JOIN files f ON s.file_id = f.id "
-        "JOIN users u ON s.user_id = u.id "
-        "WHERE s.target_user_id = ? AND s.share_type = 'specific' AND "
-        "f.is_deleted = 0 "
-        "ORDER BY s.created_at DESC";
+    // ===== 4. SQL 构建 =====
+    std::string sql = "SELECT f.filename, f.original_filename, f.file_size, "
+                      "u.username, s.created_at "
+                      "FROM file_shares s "
+                      "JOIN files f ON s.file_id = f.id "
+                      "JOIN users u ON s.user_id = u.id "
+                      "WHERE s.target_user_id = ? "
+                      "AND s.share_type = 'specific' "
+                      "AND f.is_deleted = 0 ";
+
+    if (!keyword.empty()) {
+        sql += "AND f.original_filename LIKE ? ";
+    }
+
+    if (!fileType.empty()) {
+        if (fileType == "image") {
+            sql +=
+                "AND (f.original_filename LIKE '%.jpg' OR f.original_filename "
+                "LIKE '%.png' OR f.original_filename LIKE '%.gif') ";
+        } else if (fileType == "video") {
+            sql +=
+                "AND (f.original_filename LIKE '%.mp4' OR f.original_filename "
+                "LIKE '%.avi' OR f.original_filename LIKE '%.mkv') ";
+        } else if (fileType == "document") {
+            sql +=
+                "AND (f.original_filename LIKE '%.pdf' OR f.original_filename "
+                "LIKE '%.doc%' OR f.original_filename LIKE '%.txt') ";
+        } else if (fileType == "code") {
+            sql += "AND (f.original_filename LIKE '%.cpp' OR "
+                   "f.original_filename LIKE '%.h' OR f.original_filename LIKE "
+                   "'%.py' OR f.original_filename LIKE '%.js') ";
+        }
+    }
+
+    sql += "ORDER BY s.created_at DESC";
 
     db::MySQLStatement stmt(*mysql, sql);
     stmt.bindInt(userId);
-    stmt.execute();
 
+    if (!keyword.empty()) {
+        stmt.bindString("%" + keyword + "%");
+    }
+
+    if (!stmt.execute()) {
+        sendError(resp, "查询失败", fn::HttpResponse::k500InternalServerError,
+                  conn);
+        return true;
+    }
     json files = json::array();
     auto rs = stmt.getResultSet();
     while (rs->next()) {

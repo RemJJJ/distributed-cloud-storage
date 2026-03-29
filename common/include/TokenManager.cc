@@ -1,5 +1,6 @@
 #include "TokenManager.h"
 #include "jwt-cpp/jwt.h"
+#include "jwt-cpp/traits/kazuho-picojson/defaults.h"
 #include <base/Logging.h>
 #include <chrono>
 #include <exception>
@@ -53,10 +54,10 @@ TokenManager::generateUserToken(int userId, const std::string &username) {
 }
 
 // 生成文件上传token
-TokenManager::fileUploadResponse
-TokenManager::generateUploadToken(int userId, uint64_t file_id,
-                                  const std::string &node_id,
-                                  const std::string &server_filename) {
+TokenManager::fileUploadResponse TokenManager::generateUploadToken(
+    int userId, uint64_t file_id, const std::string &node_id,
+    const std::string &original_filename, const std::string &server_filename,
+    const std::string &created_time) {
     std::string token;
     auto now = std::chrono::system_clock::now();
     try {
@@ -70,8 +71,11 @@ TokenManager::generateUploadToken(int userId, uint64_t file_id,
                     .set_payload_claim("file_id",
                                        jwt::claim(std::to_string(file_id)))
                     .set_payload_claim("node_id", jwt::claim(node_id))
+                    .set_payload_claim("original_filename",
+                                       jwt::claim(original_filename))
                     .set_payload_claim("server_filename",
                                        jwt::claim(server_filename))
+                    .set_payload_claim("created_time", jwt::claim(created_time))
                     .set_issued_at(now)
                     .set_expires_at(now +
                                     std::chrono::minutes(
@@ -221,7 +225,9 @@ std::string TokenManager::verifyNodeToken(const std::string &token) {
 
 bool TokenManager::verifyUploadToken(const std::string &token,
                                      uint64_t &out_file_id,
-                                     std::string &out_server_filename) {
+                                     std::string &out_original_filename,
+                                     std::string &out_server_filename,
+                                     std::string &out_created_time) {
     auto result = verifyToken(token);
     if (!result.success) {
         LOG_WARN << "上传 Token 验证失败: " << result.error;
@@ -235,9 +241,12 @@ bool TokenManager::verifyUploadToken(const std::string &token,
 
     try {
         out_file_id = std::stoull(result.payload.value("file_id", "0"));
+        out_original_filename = result.payload.value("original_filename", "");
         out_server_filename = result.payload.value("server_filename", "");
+        out_created_time = result.payload.value("created_time", "");
 
-        if (out_file_id == 0 || out_server_filename.empty()) {
+        if (out_file_id == 0 || out_server_filename.empty() ||
+            out_original_filename.empty()) {
             LOG_WARN << "上传 Token 缺少关键字段";
             return false;
         }

@@ -79,7 +79,9 @@ class TokenManager {
     /// @brief 生成文件上传token
     fileUploadResponse generateUploadToken(int userId, uint64_t file_id,
                                            const std::string &node_id,
-                                           const std::string &server_filename);
+                                           const std::string &original_filename,
+                                           const std::string &server_filename,
+                                           const std::string &created_time);
 
     /// @brief 生成文件下载token
     std::string generateDownloadToken(int userId,
@@ -100,7 +102,9 @@ class TokenManager {
 
     /// @brief 验证上传Token
     bool verifyUploadToken(const std::string &token, uint64_t &out_file_id,
-                           std::string &out_server_filename);
+                           std::string &out_original_filename,
+                           std::string &out_server_filename,
+                           std::string &out_created_time);
 
     /// @brief 验证下载Token
     bool verifyDownloadToken(const std::string &token,

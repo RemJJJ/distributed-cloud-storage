@@ -6,6 +6,7 @@
 #include "db/MySQLStatement.h"
 #include "net/HttpResponse.h"
 #include "random"
+#include <chrono>
 #include <string>
 
 bool FileHandler::handleListFiles(
@@ -28,6 +29,15 @@ bool FileHandler::handleListFiles(
                   conn);
         return true;
     }
+
+    // （可扩展）分页
+    int limit = 50;
+    int offset = 0;
+    if (!req.getQuery("limit").empty())
+        limit = std::stoi(req.getQuery("limit"));
+    if (!req.getQuery("offset").empty())
+        offset = std::stoi(req.getQuery("offset"));
+
     // 获取数据库连接
     auto mysql = db::MySQLPool::instance().getConnection();
     if (!mysql) {
@@ -36,15 +46,27 @@ bool FileHandler::handleListFiles(
         return true;
     }
 
-    std::string sqlTemplate = "SELECT f.id, f.filename, f.original_filename, "
-                              "f.file_size, f.file_type, f.created_at "
-                              "FROM files f WHERE f.user_id = ? AND f.status = "
-                              "'success' AND f.is_deleted = 0";
+    // 动态构建SQL语句
+    std::string sql =
+        "SELECT "
+        "f.id, f.filename, f.original_filename, f.file_size, f.created_at, "
+        "s.share_type, s.target_user_id, s.share_id, s.expire_time, "
+        "s.extract_code, "
+        "u.username "
+        "FROM files f "
+        "LEFT JOIN file_shares s ON f.id = s.file_id "
+        "LEFT JOIN users u ON s.target_user_id = u.id "
+        "WHERE f.user_id = ? "
+        "AND f.is_deleted = 0 "
+        "AND f.status = 'success'";
+
+    sql += " ORDER BY f.created_at DESC LIMIT ? OFFSET ?";
 
     LOG_INFO << "Executing file list query for user: " << userId;
 
     // 执行查询
-    db::MySQLStatement stmt(*mysql, sqlTemplate);
+    LOG_DEBUG << sql;
+    db::MySQLStatement stmt(*mysql, sql);
     if (stmt.hasError()) {
         sendError(resp, "数据库错误", fn::HttpResponse::k500InternalServerError,
                   conn);
@@ -52,6 +74,8 @@ bool FileHandler::handleListFiles(
     }
 
     stmt.bindInt(userId);
+    stmt.bindInt(limit);
+    stmt.bindInt(offset);
 
     if (!stmt.execute()) {
         LOG_ERROR << "Query failed: " << stmt.getError();
@@ -63,79 +87,41 @@ bool FileHandler::handleListFiles(
     json files = json::array();
 
     // 遍历文件列表结果
+    // 只适用于一个文件一个分享
     while (rs->next()) {
-        int fileId = rs->getInt(0);
-        std::string filename = rs->getString(1);
-        std::string originalFilename = rs->getString(2);
-        uintmax_t fileSize =
-            rs->getInt64(3); // 注意：getInt64 返回 long long，转 uintmax_t
-        std::string fileType = rs->getString(4);
-        std::string createdAt = rs->getString(5);
+        json fileInfo;
 
-        json shareInfo = nullptr;
+        fileInfo["id"] = rs->getInt(0);
+        fileInfo["name"] = rs->getString(1);
+        fileInfo["originalName"] = rs->getString(2);
+        fileInfo["size"] = rs->getInt64(3);
+        fileInfo["createdAt"] = rs->getString(4);
 
-        // 查询分享信息 (同样使用预处理语句)
-        std::string shareSql = "SELECT share_type, target_user_id, share_id, "
-                               "expire_time, extract_code FROM file_shares "
-                               "WHERE file_id = ?";
+        if (!rs->isNull(5)) {
+            json shareInfo;
+            std::string shareType = rs->getString(5);
+            shareInfo["type"] = shareType;
+            if (!rs->isNull(7)) {
+                shareInfo["shareCode"] = rs->getString(7);
+            }
 
-        db::MySQLStatement shareStmt(*mysql, shareSql);
-        if (!shareStmt.hasError()) {
-            shareStmt.bindInt(fileId);
-            if (shareStmt.execute()) {
-                auto shareRs = shareStmt.getResultSet();
-                if (shareRs->next()) {
-                    std::string shareType = shareRs->getString(0);
+            if (shareType == "protected" && !rs->isNull(9)) {
+                shareInfo["extractCode"] = rs->getString(9);
+            }
 
-                    shareInfo = {{"type", shareType}};
-
-                    // share_code
-                    if (!shareRs->isNull(2)) {
-                        shareInfo["shareCode"] = shareRs->getString(2);
-                    }
-
-                    // extract_code (仅 protected 类型)
-                    if (shareType == "protected" && !shareRs->isNull(4)) {
-                        shareInfo["extractCode"] = shareRs->getString(4);
-                    }
-
-                    // shared_with_id & username (仅 specific 类型)
-                    if (shareType == "specific" && !shareRs->isNull(1)) {
-                        int sharedWithId = shareRs->getInt(1);
-                        shareInfo["sharedWithId"] = sharedWithId;
-
-                        // 查询共享用户名
-                        std::string userSql =
-                            "SELECT username FROM users WHERE id = ?";
-                        db::MySQLStatement userStmt(*mysql, userSql);
-                        if (!userStmt.hasError()) {
-                            userStmt.bindInt(sharedWithId);
-                            if (userStmt.execute()) {
-                                auto userRs = userStmt.getResultSet();
-                                if (userRs->next()) {
-                                    shareInfo["sharedWithUsername"] =
-                                        userRs->getString(0);
-                                }
-                            }
-                        }
-                    }
-
-                    // expire_time
-                    if (!shareRs->isNull(3)) {
-                        shareInfo["expireTime"] = shareRs->getString(3);
-                    }
+            if (shareInfo == "specific") {
+                if (!rs->isNull(6)) {
+                    shareInfo["sharedWithId"] = rs->getInt(6);
+                }
+                if (!rs->isNull(10)) {
+                    shareInfo["sharedWithUsername"] = rs->getString(10);
                 }
             }
-        }
 
-        json fileInfo = {{"id", fileId},
-                         {"name", filename},
-                         {"originalName", originalFilename},
-                         {"size", fileSize},
-                         {"type", fileType},
-                         {"createdAt", createdAt}};
+            if (!rs->isNull(8)) {
+                shareInfo["expireTime"] = rs->getString(8);
+            }
 
-        if (shareInfo != nullptr) {
             fileInfo["shareInfo"] = shareInfo;
         }
 
@@ -215,9 +201,10 @@ bool FileHandler::handleFileUpload(
         // MD5 秒传逻辑
         if (!fileMd5.empty()) {
             // 查找数据库中是否已经有这个MD5且状态为success的文件
-            std::string checkSql = "SELECT node_id, filename FROM files "
-                                   "WHERE file_md5 = ? AND "
-                                   "status = 'success' LIMIT 1";
+            std::string checkSql =
+                "SELECT node_id, filename FROM files "
+                "WHERE file_md5 = ? AND "
+                "status = 'success' AND is_deleted = '0' LIMIT 1";
 
             db::MySQLStatement checkStmt(*mysql, checkSql);
             checkStmt.bindString(fileMd5);
@@ -234,12 +221,13 @@ bool FileHandler::handleFileUpload(
 
                     // 直接为当前用户插入一条新记录，状态直接标记为
                     // 'success'
+                    auto currentTime = getCurrentTimeStr();
                     std::string fastInsertSql =
                         "INSERT INTO files (filename, original_filename, "
                         "file_size, file_type, user_id, node_id, status, "
                         "file_md5, created_at, updated_at) "
-                        "VALUES (?, ?, ?, ?, ?, ?, 'success', ?, NOW(), "
-                        "NOW())";
+                        "VALUES (?, ?, ?, ?, ?, ?, 'success', ?, ?, "
+                        "?)";
                     db::MySQLStatement fastStmt(*mysql, fastInsertSql);
 
                     fastStmt.bindString(
@@ -250,10 +238,19 @@ bool FileHandler::handleFileUpload(
                     fastStmt.bindInt(userId);
                     fastStmt.bindString(existNodeId);
                     fastStmt.bindString(fileMd5);
+                    fastStmt.bindString(currentTime); // 对应 created_at
+                    fastStmt.bindString(currentTime); // 对应 updated_at
                     if (fastStmt.execute()) {
                         // 返回特殊的 code (比如
                         // 1)，告诉前端秒传成功，不需要再传给 DataNode 了
-                        json response = {{"code", 1}, {"message", "秒传成功"}};
+                        json response = {{"code", 1},
+                                         {"message", "秒传成功"},
+                                         {"file",
+                                          {"id", fastStmt.insertId()},
+                                          {"name", existServerFilename},
+                                          {"originalName", originalFilename},
+                                          {"size", fileSize},
+                                          {"createdAt", currentTime}}};
                         std::string bodyStr = response.dump();
                         resp->setStatusCode(fn::HttpResponse::k200Ok);
                         resp->setContentType("application/json");
@@ -276,11 +273,12 @@ bool FileHandler::handleFileUpload(
             return true;
         }
 
+        auto currentTime = getCurrentTimeStr();
         std::string insertSql =
             "INSERT INTO files (filename, original_filename, file_size, "
             "file_type, user_id, node_id, status, file_md5, created_at, "
             "updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, 'uploading', ?, NOW(), NOW())";
+            "VALUES (?, ?, ?, ?, ?, ?, 'uploading', ?, ?, ?)";
         db::MySQLStatement stmt(*mysql, insertSql);
 
         stmt.bindString(serverFilename);
@@ -290,6 +288,8 @@ bool FileHandler::handleFileUpload(
         stmt.bindInt(userId);
         stmt.bindString(dataNode->id_);
         stmt.bindString(fileMd5);
+        stmt.bindString(currentTime);
+        stmt.bindString(currentTime);
 
         if (!stmt.execute()) {
             LOG_ERROR << "插入文件记录失败: " << stmt.getError();
@@ -303,7 +303,8 @@ bool FileHandler::handleFileUpload(
 
         // 生成专属token
         auto fileUploadResponse = TokenManager::instance().generateUploadToken(
-            userId, fileId, dataNode->id_, serverFilename);
+            userId, fileId, dataNode->id_, originalFilename, serverFilename,
+            currentTime);
 
         //  组装响应，告诉客户端去哪里上传
         json response = {
@@ -481,13 +482,47 @@ bool FileHandler::handleListRecycleBin(
         return true;
     }
 
+    std::string keyword = urlDecode(req.getQuery("keyword"));
+    std::string fileType = req.getQuery("type");
+
     auto mysql = db::MySQLPool::instance().getConnection();
-    std::string sql =
-        "SELECT id, original_filename, file_size, deleted_at FROM files WHERE "
-        "user_id = ? AND is_deleted = 1 ORDER BY deleted_at DESC";
+    std::string sql = "SELECT id, original_filename, file_size, deleted_at "
+                      "FROM files "
+                      "WHERE user_id = ? AND is_deleted = 1 ";
+
+    if (!keyword.empty()) {
+        sql += "AND original_filename LIKE ? ";
+    }
+
+    if (!fileType.empty()) {
+        if (fileType == "image") {
+            sql += "AND (original_filename LIKE '%.jpg' OR original_filename "
+                   "LIKE '%.png' OR original_filename LIKE '%.gif') ";
+        } else if (fileType == "video") {
+            sql += "AND (original_filename LIKE '%.mp4' OR original_filename "
+                   "LIKE '%.avi' OR original_filename LIKE '%.mkv') ";
+        } else if (fileType == "document") {
+            sql += "AND (original_filename LIKE '%.pdf' OR original_filename "
+                   "LIKE '%.doc%' OR original_filename LIKE '%.txt') ";
+        } else if (fileType == "code") {
+            sql += "AND (original_filename LIKE '%.cpp' OR original_filename "
+                   "LIKE '%.h' OR original_filename LIKE '%.py' OR "
+                   "original_filename LIKE '%.js') ";
+        }
+    }
+
+    sql += "ORDER BY deleted_at DESC";
     db::MySQLStatement stmt(*mysql, sql);
     stmt.bindInt(userId);
-    stmt.execute();
+    if (!keyword.empty()) {
+        stmt.bindString("%" + keyword + "%");
+    }
+
+    if (!stmt.execute()) {
+        sendError(resp, "查询失败", fn::HttpResponse::k500InternalServerError,
+                  conn);
+        return true;
+    }
 
     json files = json::array();
     auto rs = stmt.getResultSet();

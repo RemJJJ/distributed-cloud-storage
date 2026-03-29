@@ -2,6 +2,9 @@
 #include "net/HttpRequest.h"
 #include "net/HttpResponse.h"
 #include "net/TcpConnection.h"
+#include <chrono>
+#include <iomanip>
+#include <sstream>
 
 namespace fn = fileserver::net;
 class handlerUtils {
@@ -17,4 +20,7 @@ class handlerUtils {
 
     // 【通用】获取文件类型
     static std::string getFileType(const std::string &filename);
+
+    // 获取时间
+    std::string getCurrentTimeStr();
 };
