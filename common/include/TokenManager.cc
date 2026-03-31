@@ -28,7 +28,8 @@ bool TokenManager::isInitialized() { return instance().initialized_; }
 
 // 生成用户token
 TokenManager::userLoginResponse
-TokenManager::generateUserToken(int userId, const std::string &username) {
+TokenManager::generateUserToken(int userId, const std::string &username,
+                                const std::string &service_level) {
     auto now = std::chrono::system_clock::now();
     std::string token;
     try {
@@ -40,6 +41,8 @@ TokenManager::generateUserToken(int userId, const std::string &username) {
                     .set_payload_claim("user_id",
                                        jwt::claim(std::to_string(userId)))
                     .set_payload_claim("username", jwt::claim(username))
+                    .set_payload_claim("service_level",
+                                       jwt::claim(service_level))
                     .set_issued_at(now)
                     .set_expires_at(
                         now + std::chrono::hours(24)) // 用户登录有效期 24 小时
@@ -57,7 +60,7 @@ TokenManager::generateUserToken(int userId, const std::string &username) {
 TokenManager::fileUploadResponse TokenManager::generateUploadToken(
     int userId, uint64_t file_id, const std::string &node_id,
     const std::string &original_filename, const std::string &server_filename,
-    const std::string &created_time) {
+    const std::string &created_time, const QoSPolicy &qos_policy) {
     std::string token;
     auto now = std::chrono::system_clock::now();
     try {
@@ -76,6 +79,22 @@ TokenManager::fileUploadResponse TokenManager::generateUploadToken(
                     .set_payload_claim("server_filename",
                                        jwt::claim(server_filename))
                     .set_payload_claim("created_time", jwt::claim(created_time))
+                    .set_payload_claim("service_level",
+                                       jwt::claim(qos_policy.service_level))
+                    .set_payload_claim("qos_mode",
+                                       jwt::claim(qos_policy.qos_mode))
+                    .set_payload_claim(
+                        "throttle_enabled",
+                        jwt::claim(std::string(qos_policy.throttle_enabled
+                                                   ? "1"
+                                                   : "0")))
+                    .set_payload_claim(
+                        "rate_limit_bps",
+                        jwt::claim(std::to_string(qos_policy.rate_limit_bps)))
+                    .set_payload_claim(
+                        "bucket_capacity_bytes",
+                        jwt::claim(std::to_string(
+                            qos_policy.bucket_capacity_bytes)))
                     .set_issued_at(now)
                     .set_expires_at(now +
                                     std::chrono::minutes(
@@ -93,7 +112,8 @@ TokenManager::fileUploadResponse TokenManager::generateUploadToken(
 std::string
 TokenManager::generateDownloadToken(int userId,
                                     const std::string &original_filename,
-                                    const std::string &server_filename) {
+                                    const std::string &server_filename,
+                                    const QoSPolicy &qos_policy) {
     auto now = std::chrono::system_clock::now();
     std::string token;
     try {
@@ -108,6 +128,22 @@ TokenManager::generateDownloadToken(int userId,
                                        jwt::claim(server_filename))
                     .set_payload_claim("original_filename",
                                        jwt::claim(original_filename))
+                    .set_payload_claim("service_level",
+                                       jwt::claim(qos_policy.service_level))
+                    .set_payload_claim("qos_mode",
+                                       jwt::claim(qos_policy.qos_mode))
+                    .set_payload_claim(
+                        "throttle_enabled",
+                        jwt::claim(std::string(qos_policy.throttle_enabled
+                                                   ? "1"
+                                                   : "0")))
+                    .set_payload_claim(
+                        "rate_limit_bps",
+                        jwt::claim(std::to_string(qos_policy.rate_limit_bps)))
+                    .set_payload_claim(
+                        "bucket_capacity_bytes",
+                        jwt::claim(std::to_string(
+                            qos_policy.bucket_capacity_bytes)))
                     .set_issued_at(now)
                     .set_expires_at(
                         now + std::chrono::hours(2)) // 下载链接 2 小时有效
@@ -224,10 +260,7 @@ std::string TokenManager::verifyNodeToken(const std::string &token) {
 }
 
 bool TokenManager::verifyUploadToken(const std::string &token,
-                                     uint64_t &out_file_id,
-                                     std::string &out_original_filename,
-                                     std::string &out_server_filename,
-                                     std::string &out_created_time) {
+                                     uploadTokenPayload &out_payload) {
     auto result = verifyToken(token);
     if (!result.success) {
         LOG_WARN << "上传 Token 验证失败: " << result.error;
@@ -240,13 +273,16 @@ bool TokenManager::verifyUploadToken(const std::string &token,
     }
 
     try {
-        out_file_id = std::stoull(result.payload.value("file_id", "0"));
-        out_original_filename = result.payload.value("original_filename", "");
-        out_server_filename = result.payload.value("server_filename", "");
-        out_created_time = result.payload.value("created_time", "");
+        out_payload.file_id = std::stoull(result.payload.value("file_id", "0"));
+        out_payload.original_filename =
+            result.payload.value("original_filename", "");
+        out_payload.server_filename =
+            result.payload.value("server_filename", "");
+        out_payload.created_time = result.payload.value("created_time", "");
+        out_payload.qos_policy = parseQoSPolicy(result.payload);
 
-        if (out_file_id == 0 || out_server_filename.empty() ||
-            out_original_filename.empty()) {
+        if (out_payload.file_id == 0 || out_payload.server_filename.empty() ||
+            out_payload.original_filename.empty()) {
             LOG_WARN << "上传 Token 缺少关键字段";
             return false;
         }
@@ -258,16 +294,17 @@ bool TokenManager::verifyUploadToken(const std::string &token,
 }
 
 bool TokenManager::verifyDownloadToken(const std::string &token,
-                                       std::string &out_original_filename,
-                                       std::string &out_server_filename) {
+                                       downloadTokenPayload &out_payload) {
     auto result = verifyToken(token);
     if (!result.success ||
         result.payload.value("token_type", "") != "download") {
         return false;
     }
-    out_original_filename = result.payload.value("original_filename", "");
-    out_server_filename = result.payload.value("server_filename", "");
-    return !out_server_filename.empty();
+    out_payload.original_filename =
+        result.payload.value("original_filename", "");
+    out_payload.server_filename = result.payload.value("server_filename", "");
+    out_payload.qos_policy = parseQoSPolicy(result.payload);
+    return !out_payload.server_filename.empty();
 }
 
 bool TokenManager::verifyDeleteToken(const std::string &token,
@@ -278,4 +315,35 @@ bool TokenManager::verifyDeleteToken(const std::string &token,
     }
     out_server_filename = result.payload.value("server_filename", "");
     return !out_server_filename.empty();
+}
+
+TokenManager::QoSPolicy
+TokenManager::parseQoSPolicy(const json &payload) const {
+    QoSPolicy policy;
+    policy.service_level = payload.value("service_level", "normal");
+    policy.qos_mode = payload.value("qos_mode", "elastic");
+    const std::string throttleEnabled =
+        payload.value("throttle_enabled", std::string("0"));
+    policy.throttle_enabled =
+        throttleEnabled == "1" || throttleEnabled == "true";
+
+    try {
+        policy.rate_limit_bps =
+            std::stoull(payload.value("rate_limit_bps", "0"));
+    } catch (...) {
+        policy.rate_limit_bps = 0;
+    }
+
+    try {
+        policy.bucket_capacity_bytes =
+            std::stoull(payload.value("bucket_capacity_bytes", "0"));
+    } catch (...) {
+        policy.bucket_capacity_bytes = 0;
+    }
+
+    if (!policy.throttle_enabled) {
+        policy.rate_limit_bps = 0;
+        policy.bucket_capacity_bytes = 0;
+    }
+    return policy;
 }

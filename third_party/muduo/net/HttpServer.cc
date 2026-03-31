@@ -63,7 +63,8 @@ void HttpServer::onMessage(const TcpConnectionPtr &conn, Buffer *buf,
         if (context->expectBody()) {
             HttpRequest &req = context->request();
             // 检查是否是文件上传情况
-            if (req.path() == "/upload" && req.method() == HttpRequest::kPost) {
+            if (req.path() == "/api/datanode/upload" &&
+                req.method() == HttpRequest::kPost) {
                 // 检查body数据大小
                 size_t bufSize = req.body().size();
                 if (bufSize >= 1024 * 1024) {

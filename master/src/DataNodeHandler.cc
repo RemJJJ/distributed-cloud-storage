@@ -123,10 +123,16 @@ bool DataNodeHandler::handleHeartbeat(const fn::TcpConnectionPtr &conn,
         uint64_t disk_total = jsonData.value("disk_total_mb", 0ULL);
         uint64_t disk_free = jsonData.value("disk_free_mb", 0ULL);
         int active_uploads = jsonData.value("active_uploads", 0);
+        int active_downloads = jsonData.value("active_downloads", 0);
+        int active_transfers =
+            jsonData.value("active_transfers",
+                           active_uploads + active_downloads);
 
         fn::InetAddress newAddr(node_ip, node_port);
         NodeManager::instance().updateHeartbeat(node_id, newAddr, disk_total,
-                                                disk_free, active_uploads);
+                                                disk_free, active_uploads,
+                                                active_downloads,
+                                                active_transfers);
 
         LOG_INFO << "心跳更新成功：" << node_id << " @ " << newAddr.toIpPort();
     } catch (const json::parse_error &e) {

@@ -6,6 +6,7 @@
 #include "field_types.h"
 #include "net/TimerId.h"
 #include "nlohmann/json.hpp"
+#include <algorithm>
 #include <chrono>
 #include <memory>
 #include <mutex>
@@ -20,9 +21,38 @@ void NodeManager::init(const std::string &configPath) {
         }
 
         if (!TokenManager::instance().isInitialized()) {
-            TokenManager::instance().init(configPath);
+            TokenManager::instance().init(
+                Config::instance().getString("jwt-secret"));
         }
-        instance().initialized_ = true;
+
+        auto &manager = instance();
+        manager.qosEnabled_ = Config::instance().getBool("qos.enabled", false);
+        manager.strictEnterActiveTransfers_ =
+            Config::instance().getInt("qos.strict_enter_active_transfers", 8);
+        manager.strictExitActiveTransfers_ =
+            Config::instance().getInt("qos.strict_exit_active_transfers", 4);
+        manager.normalUploadRateKbps_ =
+            Config::instance().getInt("qos.normal_upload_rate_kbps", 512);
+        manager.normalDownloadRateKbps_ =
+            Config::instance().getInt("qos.normal_download_rate_kbps", 1024);
+        manager.tokenBucketCapacityKb_ =
+            Config::instance().getInt("qos.token_bucket_capacity_kb", 256);
+        if (manager.strictExitActiveTransfers_ >
+            manager.strictEnterActiveTransfers_) {
+            manager.strictExitActiveTransfers_ =
+                manager.strictEnterActiveTransfers_;
+        }
+
+        LOG_INFO << "QoS config loaded. enabled=" << manager.qosEnabled_
+                 << ", strict_enter=" << manager.strictEnterActiveTransfers_
+                 << ", strict_exit=" << manager.strictExitActiveTransfers_
+                 << ", normal_upload_rate_kbps="
+                 << manager.normalUploadRateKbps_
+                 << ", normal_download_rate_kbps="
+                 << manager.normalDownloadRateKbps_
+                 << ", token_bucket_capacity_kb="
+                 << manager.tokenBucketCapacityKb_;
+        manager.initialized_ = true;
     });
 }
 
@@ -59,6 +89,7 @@ NodeManager::registerNode(const std::string &reported_node_id,
         // 标记存活
         nodes_[final_node_id]->isAlive_ = true;
         nodes_[final_node_id]->lastHeartbeat_ = fileserver::Timestamp::now();
+        refreshClusterQosModeLocked();
     }
 
     // 生成token返回
@@ -69,7 +100,8 @@ NodeManager::registerNode(const std::string &reported_node_id,
 void NodeManager::updateHeartbeat(const std::string &node_id,
                                   const fn::InetAddress &newAddr,
                                   uint64_t disk_total, uint64_t disk_free,
-                                  int active_uploads) {
+                                  int active_uploads, int active_downloads,
+                                  int active_transfers) {
     std::lock_guard<std::mutex> lock(mutex_);
 
     auto it = nodes_.find(node_id);
@@ -80,8 +112,12 @@ void NodeManager::updateHeartbeat(const std::string &node_id,
         // 更新调度指标
         it->second->diskTotalMb_ = disk_total;
         it->second->diskFreeMb_ = disk_free;
-        // 这里直接覆盖活跃数，心跳是最准确的真是状态
+        // 这里直接覆盖活跃数，心跳是最准确的真实状态
         it->second->activeUploads_ = active_uploads;
+        it->second->activeDownloads_ = active_downloads;
+        it->second->activeTransfers_ =
+            active_transfers > 0 ? active_transfers
+                                 : (active_uploads + active_downloads);
 
         // 如果更换了IP或端口，直接更新
         if (it->second->addr_.toIpPort() != newAddr.toIpPort()) {
@@ -89,6 +125,7 @@ void NodeManager::updateHeartbeat(const std::string &node_id,
                      << newAddr.toIpPort();
             it->second->addr_ = newAddr;
         }
+        refreshClusterQosModeLocked();
     } else {
         LOG_WARN << "Update heartbeat failed: datanode not. node_id="
                  << node_id;
@@ -108,6 +145,7 @@ NodeManager::getNodeInfo(const std::string &node_id) {
 std::shared_ptr<DataNodeInfo>
 NodeManager::getAliveNode(uint64_t requiredSpace) {
     std::lock_guard<std::mutex> lock(mutex_);
+    refreshClusterQosModeLocked();
 
     std::vector<std::shared_ptr<DataNodeInfo>> candidateNodes;
     double totalScore = 0.0;
@@ -154,7 +192,7 @@ NodeManager::getAliveNode(uint64_t requiredSpace) {
 
         // 多维打分机制 (权重: 磁盘可用率0.7，并发负载0.3)
         // 活跃连接数越少，得分越高。加1防止除以0
-        double loadScore = 1.0 / (node->activeUploads_ + 1.0);
+        double loadScore = 1.0 / (node->activeTransfers_ + 1.0);
 
         // 综合得分
         double finalScore = (0.7 * diskFreeRate) + (0.3 * loadScore);
@@ -186,6 +224,7 @@ NodeManager::getAliveNode(uint64_t requiredSpace) {
             // 既然Master选择了它，在它下次心跳汇报前，Master内存里主动把它的活跃数+1
             // 防止在心跳间隔内，多个并发请求全部分配给它
             node->activeUploads_ += 1;
+            node->activeTransfers_ += 1;
             if (node->diskFreeMb_ > requiredMb) {
                 node->diskFreeMb_ -= requiredMb;
             } else {
@@ -193,12 +232,44 @@ NodeManager::getAliveNode(uint64_t requiredSpace) {
             }
             LOG_INFO << "Chosen node: " << node->id_
                      << " (Score: " << node->currentScore_
-                     << ", predict activeUploads: " << node->activeUploads_
+                     << ", predict activeTransfers: " << node->activeTransfers_
                      << ")";
             return node;
         }
     }
     return candidateNodes.back();
+}
+
+NodeManager::ClusterQosMode NodeManager::getClusterQosMode() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return clusterQosMode_;
+}
+
+TokenManager::QoSPolicy
+NodeManager::buildQoSPolicy(const std::string &service_level,
+                            bool is_download) const {
+    TokenManager::QoSPolicy policy;
+    const ClusterQosMode currentMode = getClusterQosMode();
+    policy.service_level = normalizeServiceLevel(service_level);
+    policy.qos_mode =
+        currentMode == ClusterQosMode::kStrict ? "strict" : "elastic";
+
+    if (!qosEnabled_) {
+        return policy;
+    }
+
+    if (currentMode == ClusterQosMode::kStrict &&
+        policy.service_level != "vip") {
+        policy.throttle_enabled = true;
+        const int rateKbps =
+            is_download ? normalDownloadRateKbps_ : normalUploadRateKbps_;
+        policy.rate_limit_bps =
+            static_cast<uint64_t>(std::max(rateKbps, 0)) * 1024ULL;
+        policy.bucket_capacity_bytes =
+            static_cast<uint64_t>(std::max(tokenBucketCapacityKb_, 0)) *
+            1024ULL;
+    }
+    return policy;
 }
 
 void NodeManager::startTimeoutChecker(fn::EventLoop *loop, double interval) {
@@ -215,4 +286,55 @@ void NodeManager::checkTimeoutNodes() {
                      << node->lastHeartbeat_.toFormattedString() << ")";
         }
     }
+    refreshClusterQosModeLocked();
+}
+
+int NodeManager::getTotalActiveTransfersLocked() const {
+    int totalActiveTransfers = 0;
+    for (const auto &pair : nodes_) {
+        const auto &node = pair.second;
+        if (!node->isAlive_) {
+            continue;
+        }
+        totalActiveTransfers += std::max(node->activeTransfers_, 0);
+    }
+    return totalActiveTransfers;
+}
+
+void NodeManager::refreshClusterQosModeLocked() {
+    if (!qosEnabled_) {
+        clusterQosMode_ = ClusterQosMode::kElastic;
+        return;
+    }
+
+    // 当前集群所有连接数
+    const int totalActiveTransfers = getTotalActiveTransfersLocked();
+    LOG_DEBUG << "当前集群所有连接数：" << totalActiveTransfers;
+
+    ClusterQosMode oldMode = clusterQosMode_;
+
+    if (clusterQosMode_ == ClusterQosMode::kElastic &&
+        totalActiveTransfers >= strictEnterActiveTransfers_) {
+        clusterQosMode_ = ClusterQosMode::kStrict;
+    } else if (clusterQosMode_ == ClusterQosMode::kStrict &&
+               totalActiveTransfers <= strictExitActiveTransfers_) {
+        clusterQosMode_ = ClusterQosMode::kElastic;
+    }
+
+    LOG_DEBUG << "集群策略："
+              << (clusterQosMode_ == NodeManager::ClusterQosMode::kElastic
+                      ? "elastic"
+                      : "strict");
+
+    if (oldMode != clusterQosMode_) {
+        LOG_INFO << "Cluster QoS mode switched to "
+                 << (clusterQosMode_ == ClusterQosMode::kStrict ? "strict"
+                                                                : "elastic")
+                 << ", total_active_transfers=" << totalActiveTransfers;
+    }
+}
+
+std::string
+NodeManager::normalizeServiceLevel(const std::string &service_level) {
+    return service_level == "vip" ? "vip" : "normal";
 }

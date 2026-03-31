@@ -260,6 +260,8 @@ void MasterClient::sendHeartbeat() {
 
     // 获取当前活跃上传数
     int activeUploads = datanode_->getActiveUploads();
+    int activeDownloads = datanode_->getActiveDownloads();
+    int activeTransfers = datanode_->getActiveTransfers();
     json hbMessage = {
         {"node_id", currentNodeId},
         {"ip", myAddr_.toIp()},
@@ -267,10 +269,14 @@ void MasterClient::sendHeartbeat() {
         {"disk_total_mb", diskTotalMb},
         {"disk_free_mb", diskFreeMb},
         {"active_uploads", activeUploads},
+        {"active_downloads", activeDownloads},
+        {"active_transfers", activeTransfers},
         {"timestamp", fileserver::Timestamp::now().microSecondsSinceEpoch()}};
     post("/heartbeat", hbMessage.dump(), true);
     LOG_INFO << "Heartbeat sent. Frees: " << diskFreeMb
-             << "MB, Active: " << activeUploads;
+             << "MB, Uploads: " << activeUploads
+             << ", Downloads: " << activeDownloads
+             << ", Transfers: " << activeTransfers;
 }
 
 void MasterClient::post(const std::string &path, const std::string &body,

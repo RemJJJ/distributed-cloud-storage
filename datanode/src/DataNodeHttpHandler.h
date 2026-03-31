@@ -1,6 +1,7 @@
 #pragma once
 #include "BaseHandler.h"
 #include "FileStorage.h"
+#include "TokenBucketRateLimiter.h"
 #include "base/Logging.h"
 #include "net/EventLoop.h"
 #include "net/HttpContext.h"
@@ -10,6 +11,7 @@
 #include <fstream>
 #include <memory>
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <ratio>
 #include <regex>
 
@@ -27,12 +29,14 @@ class FileUploadContext {
     };
 
     FileUploadContext(uint64_t fileID, const std::string &filename,
-                      std::shared_ptr<FileStorage> &&storage);
+                      std::shared_ptr<FileStorage> &&storage,
+                      std::shared_ptr<TokenBucketRateLimiter> rateLimiter);
 
     ~FileUploadContext();
 
     /// @brief 写入数据
     void writeData(const char *data, size_t len);
+    void throttleIfNeeded(size_t len);
 
     /// @brief 获取已写入字节数
     uintmax_t getTotalBytes() const { return storage_->totalBytes(); }
@@ -62,27 +66,30 @@ class FileUploadContext {
     State getState() const { return state_; }
 
     /// @brief 设置当前状态
-    void setState(State state) {
-        State oldState = state_;
-        state_ = state;
-    }
+    void setState(State state) { state_ = state; }
+
+    bool releaseTransferCounter();
 
   private:
     uint64_t fileID_;                      // 文件ID
     std::string filename_;                 // 保存在服务器上的文件名
     std::shared_ptr<FileStorage> storage_; // 文件存储
-    uintmax_t totalBytes_;                 // 已写入字节数
-    State state_;                          // 当前状态
-    std::string boundary_;                 // multipart边界
+    std::shared_ptr<TokenBucketRateLimiter> rateLimiter_;
+    uintmax_t totalBytes_; // 已写入字节数
+    State state_;          // 当前状态
+    std::string boundary_; // multipart边界
+    bool transferCounterReleased_ = false;
 };
 
 // 文件下载上下文
 class FileDownContext {
   public:
     FileDownContext(const std::string &filepath,
-                    const std::string &originalFilename)
+                    const std::string &originalFilename,
+                    std::shared_ptr<TokenBucketRateLimiter> rateLimiter)
         : filepath_(filepath), originalFilename_(originalFilename),
-          fileSize_(0), currentPosition_(0), isComplete_(false) {
+          rateLimiter_(std::move(rateLimiter)), fileSize_(0),
+          currentPosition_(0), isComplete_(false) {
         // 获取文件大小
         fileSize_ = fs::file_size(filepath_);
 
@@ -140,14 +147,33 @@ class FileDownContext {
     uintmax_t getCurrentPosition() const { return currentPosition_; }
     uintmax_t getFileSize() const { return fileSize_; }
     const std::string &getOriginalFilename() const { return originalFilename_; }
+    void throttleIfNeeded(size_t len) {
+        if (rateLimiter_) {
+            rateLimiter_->consume(len);
+        }
+    }
+    bool releaseTransferCounter() {
+        if (transferCounterReleased_) {
+            return false;
+        }
+        transferCounterReleased_ = true;
+        return true;
+    }
 
   private:
     std::string filepath_;         // 文件路径
     std::string originalFilename_; // 原始文件名
     std::ifstream file_;           // 文件流
-    uintmax_t fileSize_;           // 文件总大小
-    uintmax_t currentPosition_;    // 当前读取位置
-    bool isComplete_;              // 是否完成
+    std::shared_ptr<TokenBucketRateLimiter> rateLimiter_;
+    uintmax_t fileSize_;        // 文件总大小
+    uintmax_t currentPosition_; // 当前读取位置
+    bool isComplete_;           // 是否完成
+    bool transferCounterReleased_ = false;
+};
+
+struct ConnectionTransferState {
+    std::shared_ptr<FileUploadContext> uploadContext;
+    std::shared_ptr<FileDownContext> downloadContext;
 };
 
 class DataNode;
@@ -156,6 +182,10 @@ class DataNodeHttpHandler : public BaseHandler {
   private:
     std::string uploadDir_; // 上传目录
     DataNode *datanode_;
+
+    std::mutex transferMutex_; // 连接数锁
+    std::unordered_map<std::string, std::shared_ptr<ConnectionTransferState>>
+        activeTransfers_;
 
   public:
     DataNodeHttpHandler(DataNode *datanode);

@@ -19,6 +19,8 @@ struct DataNodeInfo {
     uint64_t diskTotalMb_ = 0;
     uint64_t diskFreeMb_ = 0;
     int activeUploads_ = 0;
+    int activeDownloads_ = 0;
+    int activeTransfers_ = 0;
     double currentScore_ = 0.0;
 
     DataNodeInfo(const fn::InetAddress &addr) : addr_(addr), isAlive_(true) {

@@ -9,10 +9,60 @@
 #include "net/HttpResponse.h"
 #include <mysql/mysql.h>
 #include <nlohmann/json.hpp>
+#include <mutex>
 #include <random>
 #include <string>
 
 using json = nlohmann::json;
+
+namespace {
+std::string normalizeServiceLevel(const std::string &serviceLevel) {
+    return serviceLevel == "vip" ? "vip" : "normal";
+}
+} // namespace
+
+UserHandler::UserHandler() { ensureServiceLevelColumn(); }
+
+void UserHandler::ensureServiceLevelColumn() {
+    static std::once_flag onceFlag;
+    std::call_once(onceFlag, []() {
+        auto mysql = db::MySQLPool::instance().getConnection();
+        if (!mysql) {
+            LOG_WARN << "Skip ensuring users.service_level because DB "
+                        "connection is unavailable";
+            return;
+        }
+
+        std::string checkSql =
+            "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS "
+            "WHERE TABLE_SCHEMA = DATABASE() "
+            "AND TABLE_NAME = 'users' "
+            "AND COLUMN_NAME = 'service_level' LIMIT 1";
+        db::MySQLStatement checkStmt(*mysql, checkSql);
+        if (!checkStmt.execute()) {
+            LOG_WARN << "Failed to inspect users.service_level: "
+                     << checkStmt.getError();
+            return;
+        }
+
+        auto rs = checkStmt.getResultSet();
+        if (rs && rs->next()) {
+            return;
+        }
+
+        std::string alterSql =
+            "ALTER TABLE users ADD COLUMN service_level VARCHAR(16) NOT NULL "
+            "DEFAULT 'normal'";
+        db::MySQLStatement alterStmt(*mysql, alterSql);
+        if (!alterStmt.execute()) {
+            LOG_WARN << "Failed to add users.service_level: "
+                     << alterStmt.getError();
+            return;
+        }
+
+        LOG_INFO << "Added users.service_level column with default normal";
+    });
+}
 
 std::string UserHandler::generateShareCode() {
     const std::string charset =
@@ -202,7 +252,8 @@ bool UserHandler::handleLogin(const fn::TcpConnectionPtr &conn,
         }
 
         std::string querySql =
-            "SELECT id, username, password FROM users WHERE username = ?";
+            "SELECT id, username, password, service_level "
+            "FROM users WHERE username = ?";
         db::MySQLStatement stmt(*mysql, querySql);
 
         if (stmt.hasError()) {
@@ -232,6 +283,7 @@ bool UserHandler::handleLogin(const fn::TcpConnectionPtr &conn,
         int userId = rs->getInt(0);
         std::string dbUsername = rs->getString(1);
         std::string hashedPassword = rs->getString(2);
+        std::string serviceLevel = normalizeServiceLevel(rs->getString(3));
 
         // bcrypt 验证密码 ---
         if (!PasswordHash::verify(password, hashedPassword)) {
@@ -246,7 +298,8 @@ bool UserHandler::handleLogin(const fn::TcpConnectionPtr &conn,
 
         // 生成 JWT Token ---
         auto &tm = TokenManager::instance();
-        auto loginResult = tm.generateUserToken(userId, username);
+        auto loginResult =
+            tm.generateUserToken(userId, username, serviceLevel);
         if (loginResult.token.empty()) {
             sendError(resp, "Token 生成失败",
                       fn::HttpResponse::k500InternalServerError, conn);
@@ -273,7 +326,8 @@ bool UserHandler::handleLogin(const fn::TcpConnectionPtr &conn,
                          {"tokenType", "Bearer"},
                          {"expiresIn", 86400},
                          {"userId", userId},
-                         {"username", username}};
+                         {"username", username},
+                         {"serviceLevel", serviceLevel}};
         resp->setBody(response.dump());
         resp->addHeader("Content-Length",
                         std::to_string(response.dump().size()));
@@ -776,8 +830,9 @@ bool UserHandler::handleShareVerify(const fn::TcpConnectionPtr &conn,
         // 🌟 核心：签发下载 Token (因为是外部人员，userId 传 0 即可，DataNode
         // 只认 serverFilename)
         std::string downloadToken =
-            TokenManager::instance().generateDownloadToken(0, originalFilename,
-                                                           serverFilename);
+            TokenManager::instance().generateDownloadToken(
+                0, originalFilename, serverFilename,
+                NodeManager::instance().buildQoSPolicy("normal", true));
 
         json response = {
             {"code", 0},

@@ -10,15 +10,31 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <sys/socket.h>
 
+namespace {
+std::shared_ptr<TokenBucketRateLimiter>
+buildRateLimiter(const TokenManager::QoSPolicy &qosPolicy) {
+    if (!qosPolicy.throttle_enabled || qosPolicy.rate_limit_bps == 0 ||
+        qosPolicy.bucket_capacity_bytes == 0) {
+        return nullptr;
+    }
+
+    return std::make_shared<TokenBucketRateLimiter>(
+        qosPolicy.rate_limit_bps, qosPolicy.bucket_capacity_bytes);
+}
+} // namespace
+
 // --------------FileUploadContext--------------
-FileUploadContext::FileUploadContext(uint64_t fileID,
-                                     const std::string &filename,
-                                     std::shared_ptr<FileStorage> &&storage)
+FileUploadContext::FileUploadContext(
+    uint64_t fileID, const std::string &filename,
+    std::shared_ptr<FileStorage> &&storage,
+    std::shared_ptr<TokenBucketRateLimiter> rateLimiter)
     : fileID_(fileID), filename_(filename), storage_(std::move(storage)),
-      totalBytes_(0), state_(State::kExpectHeaders), boundary_("") {
+      rateLimiter_(std::move(rateLimiter)), totalBytes_(0),
+      state_(State::kExpectHeaders), boundary_("") {
     if (!storage_) {
         LOG_ERROR << "FileStorage not initialized";
     }
@@ -49,6 +65,20 @@ void FileUploadContext::writeData(const char *data, size_t len) {
         LOG_ERROR << "FileStorage: write failed - " << e.what();
         throw; // 向上层抛出异常
     }
+}
+
+void FileUploadContext::throttleIfNeeded(size_t len) {
+    if (rateLimiter_) {
+        rateLimiter_->consume(len);
+    }
+}
+
+bool FileUploadContext::releaseTransferCounter() {
+    if (transferCounterReleased_) {
+        return false;
+    }
+    transferCounterReleased_ = true;
+    return true;
 }
 
 // --------------Handler--------------
@@ -119,12 +149,31 @@ void DataNodeHttpHandler::onConnection(const TcpConnectionPtr &conn) {
     } else {
         LOG_INFO << "Connection closed from " << conn->peerAddress().toIpPort();
         // 清理上下文
-        if (auto context =
-                std::static_pointer_cast<HttpContext>(conn->getContext())) {
-            if (auto uploadContext = context->getContext<FileUploadContext>()) {
-                LOG_INFO << "Cleaning up upload context for file: "
-                         << uploadContext->getFilename();
+
+        std::shared_ptr<ConnectionTransferState> transferState;
+
+        {
+            std::lock_guard<std::mutex> lock(transferMutex_);
+            auto it = activeTransfers_.find(conn->name());
+            if (it != activeTransfers_.end()) {
+                transferState = it->second;
+                activeTransfers_.erase(it); // 移除记录
+            }
+        }
+
+        // 如果找到了状态，说明任务被异常中断，执行减扣
+        if (transferState) {
+            if (transferState->uploadContext &&
+                transferState->uploadContext->releaseTransferCounter()) {
+                LOG_INFO << "Abnormal disconnection: cleaning up upload "
+                            "context and reducing the active count";
                 datanode_->decActiveUpload();
+            }
+            if (transferState->downloadContext &&
+                transferState->downloadContext->releaseTransferCounter()) {
+                LOG_INFO << "Abnormal disconnection: cleaning up download "
+                            "context and reducing the active count";
+                datanode_->decActiveDownload();
             }
         }
         conn->setContext(std::shared_ptr<void>());
@@ -167,14 +216,10 @@ bool DataNodeHttpHandler::handleFileUpload(
         return true;
     }
 
-    uint64_t fileID = 0;
-    std::string serverFilename;
-    std::string originalFilename;
-    std::string created_time;
+    TokenManager::uploadTokenPayload uploadPayload;
     std::string uploadToken = authHeader.substr(7);
-    if (!TokenManager::instance().verifyUploadToken(
-            uploadToken, fileID, originalFilename, serverFilename,
-            created_time)) {
+    if (!TokenManager::instance().verifyUploadToken(uploadToken,
+                                                    uploadPayload)) {
         sendError(resp, "上传 Token 无效或已过期",
                   HttpResponse::k401Unauthorized, conn);
         return true;
@@ -191,18 +236,37 @@ bool DataNodeHttpHandler::handleFileUpload(
     }
     LOG_INFO << "body.size() = " << req.body().size();
 
+    std::shared_ptr<ConnectionTransferState> transferState;
+    {
+        std::lock_guard<std::mutex> lock(transferMutex_);
+        auto it = activeTransfers_.find(conn->name());
+        if (it != activeTransfers_.end()) {
+            transferState = it->second;
+        } else {
+            transferState = std::make_shared<ConnectionTransferState>();
+            activeTransfers_[conn->name()] = transferState;
+        }
+    }
+
     // 尝试获取已经存在的上传上下文
     std::shared_ptr<FileUploadContext> uploadContext =
-        httpContext->getContext<FileUploadContext>();
+        transferState->uploadContext;
 
     if (!uploadContext) {
         try {
-            std::string filePath = uploadDir_ + "/" + serverFilename;
+            std::string filePath =
+                uploadDir_ + "/" + uploadPayload.server_filename;
             auto localStorage = std::make_shared<LocalFileStorage>();
             uploadContext = std::make_shared<FileUploadContext>(
-                fileID, filePath, std::move(localStorage));
-            httpContext->setContext(uploadContext);
-            LOG_INFO << "开始接收文件: " << serverFilename;
+                uploadPayload.file_id, filePath, std::move(localStorage),
+                buildRateLimiter(uploadPayload.qos_policy));
+            transferState->uploadContext = uploadContext;
+            LOG_INFO << "开始接收文件: " << uploadPayload.server_filename
+                     << ", service_level="
+                     << uploadPayload.qos_policy.service_level
+                     << ", qos_mode=" << uploadPayload.qos_policy.qos_mode
+                     << ", throttle="
+                     << uploadPayload.qos_policy.throttle_enabled;
 
             // 新的上传任务开始，计数器+1
             datanode_->incActiveUpload();
@@ -215,6 +279,7 @@ bool DataNodeHttpHandler::handleFileUpload(
 
     if (!req.body().empty()) {
         try {
+            uploadContext->throttleIfNeeded(req.body().size());
             uploadContext->writeData(req.body().data(), req.body().size());
             req.setBody(""); // 清空内存，防止 OOM
         } catch (std::exception &e) {
@@ -228,7 +293,15 @@ bool DataNodeHttpHandler::handleFileUpload(
     if (uploadContext->getState() == FileUploadContext::State::kComplete ||
         httpContext->gotAll()) {
         // 上传任务完成，计数器-1
-        datanode_->decActiveUpload();
+        if (uploadContext->releaseTransferCounter()) {
+            datanode_->decActiveUpload();
+        }
+
+        // 从Map中安全移除状态
+        {
+            std::lock_guard<std::mutex> lock(transferMutex_);
+            activeTransfers_.erase(conn->name());
+        }
 
         auto file_id = uploadContext->getFileID();
         auto server_filename = uploadContext->getFilename();
@@ -239,9 +312,9 @@ bool DataNodeHttpHandler::handleFileUpload(
                          {"file",
                           {{"id", file_id},
                            {"name", server_filename.substr(8)},
-                           {"originalName", originalFilename},
+                           {"originalName", uploadPayload.original_filename},
                            {"size", stored_size},
-                           {"createdAt", created_time}}}};
+                           {"createdAt", uploadPayload.created_time}}}};
         //   respJson["data"]["file_md5"] = uploadContext->getFileMd5();
         // 优化：只 dump 一次
         std::string bodyStr = respJson.dump();
@@ -252,7 +325,10 @@ bool DataNodeHttpHandler::handleFileUpload(
         resp->addHeader("Content-Length", std::to_string(bodyStr.size()));
 
         // 清理上下文
-        httpContext->setContext(nullptr);
+        transferState->uploadContext.reset();
+        if (!transferState->downloadContext) {
+            httpContext->setContext(nullptr);
+        }
 
         // 设置写完成回调以关闭连接
         conn->setWriteCompleteCallback([](const TcpConnectionPtr &connection) {
@@ -293,16 +369,13 @@ bool DataNodeHttpHandler::handleFileDownload(
     resp->addHeader("Access-Control-Allow-Origin", "*");
 
     std::string token = req.getQuery("token");
-    uint64_t file_id;
-    std::string serverFilename;
-    std::string originalFilename;
-    if (!TokenManager::instance().verifyDownloadToken(token, originalFilename,
-                                                      serverFilename)) {
+    TokenManager::downloadTokenPayload downloadPayload;
+    if (!TokenManager::instance().verifyDownloadToken(token, downloadPayload)) {
         sendError(resp, "非法请求", HttpResponse::k403Forbidden, conn);
         return true;
     }
 
-    std::string filepath = uploadDir_ + "/" + serverFilename;
+    std::string filepath = uploadDir_ + "/" + downloadPayload.server_filename;
     if (!fs::exists(filepath)) {
         sendError(resp, "文件丢失", HttpResponse::k404NotFound, conn);
         return true;
@@ -330,8 +403,9 @@ bool DataNodeHttpHandler::handleFileDownload(
                                 : HttpResponse::k200Ok);
     resp->addHeader("Accept-Ranges", "bytes");
     resp->addHeader("Content-Disposition",
-                    "attachment; filename=\"" + originalFilename + "\"");
-    resp->setContentType(getMimeType(originalFilename));
+                    "attachment; filename=\"" +
+                        downloadPayload.original_filename + "\"");
+    resp->setContentType(getMimeType(downloadPayload.original_filename));
     if (isRange) {
         resp->addHeader("Content-Range", "bytes " + std::to_string(startPos) +
                                              "-" + std::to_string(endPos) +
@@ -341,18 +415,47 @@ bool DataNodeHttpHandler::handleFileDownload(
 
     auto httpContext =
         std::static_pointer_cast<HttpContext>(conn->getContext());
-    auto downContext =
-        std::make_shared<FileDownContext>(filepath, serverFilename);
+    if (!httpContext) {
+        sendError(resp, "Internal Server Error",
+                  HttpResponse::k500InternalServerError, conn);
+        return true;
+    }
+
+    auto transferState = std::make_shared<ConnectionTransferState>();
+
+    auto downContext = std::make_shared<FileDownContext>(
+        filepath, downloadPayload.original_filename,
+        buildRateLimiter(downloadPayload.qos_policy));
     downContext->seekTo(startPos);
-    httpContext->setContext(downContext);
+    transferState->downloadContext = downContext;
+
+    {
+        std::lock_guard<std::mutex> lock(transferMutex_);
+        activeTransfers_[conn->name()] = transferState;
+    }
+    datanode_->incActiveDownload();
+
+    LOG_INFO << "Start download: " << downloadPayload.server_filename
+             << ", service_level=" << downloadPayload.qos_policy.service_level
+             << ", qos_mode=" << downloadPayload.qos_policy.qos_mode
+             << ", throttle=" << downloadPayload.qos_policy.throttle_enabled;
 
     conn->setWriteCompleteCallback(
-        [downContext](const TcpConnectionPtr &connection) {
+        [this, conn_name = conn->name(),
+         downContext](const TcpConnectionPtr &connection) {
             std::string chunk;
             if (downContext->readNextChunk(chunk)) {
+                downContext->throttleIfNeeded(chunk.size());
                 connection->send(chunk);
                 return true;
             } else {
+                if (downContext->releaseTransferCounter()) {
+                    datanode_->decActiveDownload();
+                }
+                {
+                    std::lock_guard<std::mutex> lock(transferMutex_);
+                    activeTransfers_.erase(conn_name);
+                }
                 connection->shutdown();
                 return true;
             }

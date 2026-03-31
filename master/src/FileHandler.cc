@@ -9,6 +9,30 @@
 #include <chrono>
 #include <string>
 
+namespace {
+std::string normalizeServiceLevel(const std::string &serviceLevel) {
+    return serviceLevel == "vip" ? "vip" : "normal";
+}
+
+std::string fetchUserServiceLevel(db::MySQLPool::ConnectionGuard &mysql,
+                                  int userId) {
+    std::string sql = "SELECT service_level FROM users WHERE id = ? LIMIT 1";
+    db::MySQLStatement stmt(mysql, sql);
+    stmt.bindInt(userId);
+    if (!stmt.execute()) {
+        LOG_WARN << "Failed to query user service_level for user " << userId
+                 << ": " << stmt.getError();
+        return "normal";
+    }
+
+    auto rs = stmt.getResultSet();
+    if (!rs || !rs->next()) {
+        return "normal";
+    }
+    return normalizeServiceLevel(rs->getString(0));
+}
+} // namespace
+
 bool FileHandler::handleListFiles(
     const fileserver::net::TcpConnectionPtr &conn,
     fileserver::net::HttpRequest &req,
@@ -197,6 +221,7 @@ bool FileHandler::handleFileUpload(
                       fn::HttpResponse::k500InternalServerError, conn);
             return true;
         }
+        std::string serviceLevel = fetchUserServiceLevel(*mysql, userId);
 
         // MD5 秒传逻辑
         if (!fileMd5.empty()) {
@@ -304,7 +329,8 @@ bool FileHandler::handleFileUpload(
         // 生成专属token
         auto fileUploadResponse = TokenManager::instance().generateUploadToken(
             userId, fileId, dataNode->id_, originalFilename, serverFilename,
-            currentTime);
+            currentTime,
+            NodeManager::instance().buildQoSPolicy(serviceLevel, false));
 
         //  组装响应，告诉客户端去哪里上传
         json response = {
@@ -366,6 +392,11 @@ bool FileHandler::handleFileDownload(
     }
 
     auto mysql = db::MySQLPool::instance().getConnection();
+    if (!mysql) {
+        sendError(resp, "数据库连接失败",
+                  fn::HttpResponse::k500InternalServerError, conn);
+        return true;
+    }
     std::string querySql =
         "SELECT f.id, f.node_id, f.original_filename, f.file_size "
         "FROM files f "
@@ -392,10 +423,10 @@ bool FileHandler::handleFileDownload(
         return true;
     }
 
-    int64_t fileId = rs->getInt64(0);
     std::string nodeId = rs->getString(1);
     std::string original_filename = rs->getString(2);
     uintmax_t fileSize = rs->getInt64(3);
+    std::string serviceLevel = fetchUserServiceLevel(*mysql, userId);
 
     // 获取 DataNode 地址
     LOG_DEBUG << "nodeId: " << nodeId;
@@ -406,7 +437,8 @@ bool FileHandler::handleFileDownload(
         return true;
     }
     auto fileResponse = TokenManager::instance().generateDownloadToken(
-        userId, original_filename, serverFilename);
+        userId, original_filename, serverFilename,
+        NodeManager::instance().buildQoSPolicy(serviceLevel, true));
 
     // 返回 DataNode 播放地址
     json response = {{"code", 0},

@@ -10,6 +10,8 @@ namespace fn = fileserver::net;
 
 class UserHandler : public handlerUtils {
   public:
+    UserHandler();
+
     // 用户注册
     bool handleRegister(const fn::TcpConnectionPtr &conn, fn::HttpRequest &req,
                         std::shared_ptr<fn::HttpResponse> &resp);
@@ -56,6 +58,7 @@ class UserHandler : public handlerUtils {
                                 std::shared_ptr<fn::HttpResponse> &resp);
 
   private:
+    void ensureServiceLevelColumn();
     std::string generateShareCode();
     std::string generateExtractCode();
 };

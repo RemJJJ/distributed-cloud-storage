@@ -22,6 +22,8 @@ template <> struct hash<fn::InetAddress> {
 
 class NodeManager {
   public:
+    enum class ClusterQosMode { kElastic, kStrict };
+
     ~NodeManager() = default;
     /// @brief 首次调用时传入配置路径，查看config是否初始化
     static void init(const std::string &configPath = "config.json");
@@ -43,7 +45,8 @@ class NodeManager {
     ///@brief 更新心跳
     void updateHeartbeat(const std::string &node_id,
                          const fn::InetAddress &newAddr, uint64_t disk_total,
-                         uint64_t disk_free, int active_uploads);
+                         uint64_t disk_free, int active_uploads,
+                         int active_downloads, int active_transfers);
 
     ///@brief 启动超时检测定时器（在 Master 启动时调用一次）
     void startTimeoutChecker(fn::EventLoop *loop, double interval = 5.0);
@@ -54,6 +57,13 @@ class NodeManager {
     /// @brief 用node_id获取节点
     std::shared_ptr<DataNodeInfo> getNodeInfo(const std::string &node_id);
 
+    /// @brief 获取当前集群 QoS 模式
+    ClusterQosMode getClusterQosMode() const;
+
+    /// @brief 根据用户等级和方向生成 QoS 策略
+    TokenManager::QoSPolicy buildQoSPolicy(const std::string &service_level,
+                                           bool is_download) const;
+
     /// @brief 获取配置值
     template <typename T>
     T getConfig(const std::string &key, T defaultVal = {}) const {
@@ -63,12 +73,23 @@ class NodeManager {
   private:
     ///@brief 扫描超时节点
     void checkTimeoutNodes();
+    int getTotalActiveTransfersLocked() const;
+    void refreshClusterQosModeLocked();
+    static std::string normalizeServiceLevel(const std::string &service_level);
     NodeManager() = default;
     NodeManager(const NodeManager &) = delete;
     NodeManager &operator=(const NodeManager &) = delete;
 
-    std::mutex mutex_; // 保护nodes_的锁
+    mutable std::mutex mutex_; // 保护nodes_的锁
     std::unordered_map<std::string, std::shared_ptr<DataNodeInfo>> nodes_;
 
+    bool qosEnabled_ = false;
+    // 双阈值迟滞控制(防止状态震荡)
+    int strictEnterActiveTransfers_ = 8;
+    int strictExitActiveTransfers_ = 4;
+    int normalUploadRateKbps_ = 512;
+    int normalDownloadRateKbps_ = 1024;
+    int tokenBucketCapacityKb_ = 256;
+    ClusterQosMode clusterQosMode_ = ClusterQosMode::kElastic;
     bool initialized_;
 };

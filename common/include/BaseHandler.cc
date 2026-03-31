@@ -25,8 +25,8 @@ bool BaseHandler::onRequest(const TcpConnectionPtr &conn, HttpRequest &req,
         // 查找匹配路由
         for (const auto &route : routes_) {
             if (route.method != req.method()) {
-                LOG_INFO << "Method mismatch: expected " << route.method
-                         << ", got " << req.method();
+                LOG_DEBUG << "Method mismatch: expected " << route.method
+                          << ", got " << req.method();
                 continue;
             }
 

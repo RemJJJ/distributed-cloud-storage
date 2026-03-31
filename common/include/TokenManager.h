@@ -13,6 +13,28 @@ using json = nlohmann::json;
 // Token管理器
 class TokenManager {
   public:
+    struct QoSPolicy {
+        std::string service_level = "normal";
+        std::string qos_mode = "elastic";
+        bool throttle_enabled = false;
+        uint64_t rate_limit_bps = 0;       // bytes per second
+        uint64_t bucket_capacity_bytes = 0;
+    };
+
+    struct uploadTokenPayload {
+        uint64_t file_id = 0;
+        std::string original_filename;
+        std::string server_filename;
+        std::string created_time;
+        QoSPolicy qos_policy;
+    };
+
+    struct downloadTokenPayload {
+        std::string original_filename;
+        std::string server_filename;
+        QoSPolicy qos_policy;
+    };
+
     struct userLoginResponse {
         std::string user_id;
         std::string token;
@@ -69,7 +91,8 @@ class TokenManager {
 
     /// @brief 生成用户登录Token
     userLoginResponse generateUserToken(int userId,
-                                        const std::string &username);
+                                        const std::string &username,
+                                        const std::string &service_level);
 
     /// @brief 生成datanodeToken
     nodeRegisterResponse
@@ -81,12 +104,14 @@ class TokenManager {
                                            const std::string &node_id,
                                            const std::string &original_filename,
                                            const std::string &server_filename,
-                                           const std::string &created_time);
+                                           const std::string &created_time,
+                                           const QoSPolicy &qos_policy);
 
     /// @brief 生成文件下载token
     std::string generateDownloadToken(int userId,
                                       const std::string &original_filename,
-                                      const std::string &server_filename);
+                                      const std::string &server_filename,
+                                      const QoSPolicy &qos_policy);
 
     /// @brief 生成文件删除Token
     std::string generateDeleteToken(const std::string &server_filename);
@@ -101,15 +126,12 @@ class TokenManager {
     std::string verifyNodeToken(const std::string &token);
 
     /// @brief 验证上传Token
-    bool verifyUploadToken(const std::string &token, uint64_t &out_file_id,
-                           std::string &out_original_filename,
-                           std::string &out_server_filename,
-                           std::string &out_created_time);
+    bool verifyUploadToken(const std::string &token,
+                           uploadTokenPayload &out_payload);
 
     /// @brief 验证下载Token
     bool verifyDownloadToken(const std::string &token,
-                             std::string &out_original_filename,
-                             std::string &out_server_filename);
+                             downloadTokenPayload &out_payload);
 
     /// @brief 验证删除文件Token
     bool verifyDeleteToken(const std::string &token,
@@ -119,6 +141,8 @@ class TokenManager {
     bool isValid(const std::string &token);
 
   private:
+    QoSPolicy parseQoSPolicy(const json &payload) const;
+
     TokenManager();
 
     std::string secretKey_;

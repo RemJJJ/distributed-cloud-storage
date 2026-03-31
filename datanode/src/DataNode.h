@@ -2,6 +2,7 @@
 #include "base/Logging.h"
 #include "net/HttpServer.h"
 #include "net/InetAddress.h"
+#include <atomic>
 #include <iostream>
 
 class DataNodeHttpHandler;
@@ -24,10 +25,28 @@ class DataNode {
 
     // 原子计数器，记录当前正在处理的上传请求数
     std::atomic<int> activeUploads_{0};
+    std::atomic<int> activeDownloads_{0};
 
     void incActiveUpload() { activeUploads_++; }
-    void decActiveUpload() { activeUploads_--; }
+    void decActiveUpload() {
+        int current = activeUploads_.load();
+        while (current > 0 &&
+               !activeUploads_.compare_exchange_weak(current, current - 1)) {
+        }
+    }
     int getActiveUploads() const { return activeUploads_.load(); }
+
+    void incActiveDownload() { activeDownloads_++; }
+    void decActiveDownload() {
+        int current = activeDownloads_.load();
+        while (current > 0 &&
+               !activeDownloads_.compare_exchange_weak(current, current - 1)) {
+        }
+    }
+    int getActiveDownloads() const { return activeDownloads_.load(); }
+    int getActiveTransfers() const {
+        return activeUploads_.load() + activeDownloads_.load();
+    }
 
   private:
     fn::EventLoop *loop_;
