@@ -32,6 +32,7 @@ class TokenManager {
     struct downloadTokenPayload {
         std::string original_filename;
         std::string server_filename;
+        std::string scene_tag = "general";
         QoSPolicy qos_policy;
     };
 
@@ -111,6 +112,7 @@ class TokenManager {
     std::string generateDownloadToken(int userId,
                                       const std::string &original_filename,
                                       const std::string &server_filename,
+                                      const std::string &scene_tag,
                                       const QoSPolicy &qos_policy);
 
     /// @brief 生成文件删除Token

@@ -113,6 +113,7 @@ std::string
 TokenManager::generateDownloadToken(int userId,
                                     const std::string &original_filename,
                                     const std::string &server_filename,
+                                    const std::string &scene_tag,
                                     const QoSPolicy &qos_policy) {
     auto now = std::chrono::system_clock::now();
     std::string token;
@@ -128,6 +129,7 @@ TokenManager::generateDownloadToken(int userId,
                                        jwt::claim(server_filename))
                     .set_payload_claim("original_filename",
                                        jwt::claim(original_filename))
+                    .set_payload_claim("scene_tag", jwt::claim(scene_tag))
                     .set_payload_claim("service_level",
                                        jwt::claim(qos_policy.service_level))
                     .set_payload_claim("qos_mode",
@@ -303,6 +305,7 @@ bool TokenManager::verifyDownloadToken(const std::string &token,
     out_payload.original_filename =
         result.payload.value("original_filename", "");
     out_payload.server_filename = result.payload.value("server_filename", "");
+    out_payload.scene_tag = result.payload.value("scene_tag", "general");
     out_payload.qos_policy = parseQoSPolicy(result.payload);
     return !out_payload.server_filename.empty();
 }

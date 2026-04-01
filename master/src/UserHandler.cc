@@ -1,15 +1,17 @@
 #include "UserHandler.h"
 #include "NodeManager.h"
 #include "PasswordHash.h"
+#include "SceneProfileService.h"
 #include "base/Logging.h"
+#include "base/ThreadPool.h"
 #include "db/MySQLPool.h"
 #include "db/MySQLStatement.h"
 #include "net/Callbacks.h"
 #include "net/HttpRequest.h"
 #include "net/HttpResponse.h"
+#include <mutex>
 #include <mysql/mysql.h>
 #include <nlohmann/json.hpp>
-#include <mutex>
 #include <random>
 #include <string>
 
@@ -21,7 +23,11 @@ std::string normalizeServiceLevel(const std::string &serviceLevel) {
 }
 } // namespace
 
-UserHandler::UserHandler() { ensureServiceLevelColumn(); }
+UserHandler::UserHandler(fileserver::ThreadPool *threadPool)
+    : threadPool_(threadPool) {
+    ensureServiceLevelColumn();
+    SceneProfileService::instance().ensureSchema();
+}
 
 void UserHandler::ensureServiceLevelColumn() {
     static std::once_flag onceFlag;
@@ -33,11 +39,10 @@ void UserHandler::ensureServiceLevelColumn() {
             return;
         }
 
-        std::string checkSql =
-            "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS "
-            "WHERE TABLE_SCHEMA = DATABASE() "
-            "AND TABLE_NAME = 'users' "
-            "AND COLUMN_NAME = 'service_level' LIMIT 1";
+        std::string checkSql = "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS "
+                               "WHERE TABLE_SCHEMA = DATABASE() "
+                               "AND TABLE_NAME = 'users' "
+                               "AND COLUMN_NAME = 'service_level' LIMIT 1";
         db::MySQLStatement checkStmt(*mysql, checkSql);
         if (!checkStmt.execute()) {
             LOG_WARN << "Failed to inspect users.service_level: "
@@ -252,7 +257,7 @@ bool UserHandler::handleLogin(const fn::TcpConnectionPtr &conn,
         }
 
         std::string querySql =
-            "SELECT id, username, password, service_level "
+            "SELECT id, username, password, service_level, scene_tag "
             "FROM users WHERE username = ?";
         db::MySQLStatement stmt(*mysql, querySql);
 
@@ -284,6 +289,7 @@ bool UserHandler::handleLogin(const fn::TcpConnectionPtr &conn,
         std::string dbUsername = rs->getString(1);
         std::string hashedPassword = rs->getString(2);
         std::string serviceLevel = normalizeServiceLevel(rs->getString(3));
+        std::string sceneTag = rs->getString(4, "general");
 
         // bcrypt 验证密码 ---
         if (!PasswordHash::verify(password, hashedPassword)) {
@@ -298,8 +304,7 @@ bool UserHandler::handleLogin(const fn::TcpConnectionPtr &conn,
 
         // 生成 JWT Token ---
         auto &tm = TokenManager::instance();
-        auto loginResult =
-            tm.generateUserToken(userId, username, serviceLevel);
+        auto loginResult = tm.generateUserToken(userId, username, serviceLevel);
         if (loginResult.token.empty()) {
             sendError(resp, "Token 生成失败",
                       fn::HttpResponse::k500InternalServerError, conn);
@@ -327,10 +332,15 @@ bool UserHandler::handleLogin(const fn::TcpConnectionPtr &conn,
                          {"expiresIn", 86400},
                          {"userId", userId},
                          {"username", username},
-                         {"serviceLevel", serviceLevel}};
+                         {"serviceLevel", serviceLevel},
+                         {"sceneTag", sceneTag}};
         resp->setBody(response.dump());
         resp->addHeader("Content-Length",
                         std::to_string(response.dump().size()));
+
+        // 登录成功后异步刷新一次用户画像，避免阻塞当前请求。
+        SceneProfileService::instance().refreshUserSceneAsync(userId,
+                                                              threadPool_);
 
         return true;
 
@@ -831,7 +841,7 @@ bool UserHandler::handleShareVerify(const fn::TcpConnectionPtr &conn,
         // 只认 serverFilename)
         std::string downloadToken =
             TokenManager::instance().generateDownloadToken(
-                0, originalFilename, serverFilename,
+                0, originalFilename, serverFilename, "general",
                 NodeManager::instance().buildQoSPolicy("normal", true));
 
         json response = {

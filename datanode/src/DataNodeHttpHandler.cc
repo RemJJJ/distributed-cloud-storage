@@ -7,14 +7,23 @@
 #include "net/Callbacks.h"
 #include "net/HttpRequest.h"
 #include "net/HttpResponse.h"
+#include <cerrno>
 #include <cstdint>
+#include <cstring>
+#include <fcntl.h>
 #include <filesystem>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <sys/socket.h>
+#include <thread>
+#include <unistd.h>
 
 namespace {
+constexpr uintmax_t kDownloadChunkSize = 1024 * 1024; // 1MB
+constexpr uintmax_t kLearningLargeFileThreshold = 50ULL * 1024ULL * 1024ULL;
+constexpr int kLearningPrefetchChunkCount = 2;
+
 std::shared_ptr<TokenBucketRateLimiter>
 buildRateLimiter(const TokenManager::QoSPolicy &qosPolicy) {
     if (!qosPolicy.throttle_enabled || qosPolicy.rate_limit_bps == 0 ||
@@ -81,9 +90,158 @@ bool FileUploadContext::releaseTransferCounter() {
     return true;
 }
 
+// --------------FileDownContext--------------
+FileDownContext::FileDownContext(
+    const std::string &filepath, const std::string &originalFilename,
+    const std::string &sceneTag,
+    std::shared_ptr<TokenBucketRateLimiter> rateLimiter,
+    std::shared_ptr<PrefetchCache> prefetchCache, ThreadPool *ioThreadPool)
+    : filepath_(filepath), originalFilename_(originalFilename),
+      sceneTag_(sceneTag), fd_(-1), rateLimiter_(std::move(rateLimiter)),
+      prefetchCache_(std::move(prefetchCache)), fileSize_(0),
+      currentPosition_(0), isComplete_(false), ioThreadPool_(ioThreadPool) {
+    fileSize_ = fs::file_size(filepath_);
+    fd_ = ::open(filepath_.c_str(), O_RDONLY);
+    if (fd_ < 0) {
+        LOG_ERROR << "Failed to open file: " << filepath_
+                  << ", errno=" << std::strerror(errno);
+        throw std::runtime_error("Failed to open file: " + filepath_);
+    }
+    LOG_INFO << "Opening file for download: " << filepath_
+             << ", size: " << fileSize_ << ", scene_tag=" << sceneTag_;
+}
+
+FileDownContext::~FileDownContext() {
+    if (fd_ >= 0) {
+        ::close(fd_);
+    }
+}
+
+void FileDownContext::seekTo(uintmax_t position) {
+    if (fd_ < 0) {
+        throw std::runtime_error("File is not open: " + filepath_);
+    }
+    currentPosition_ = position;
+    isComplete_ = false;
+}
+
+bool FileDownContext::readNextChunk(std::string &chunk) {
+    if (fd_ < 0 || isComplete_) {
+        return false;
+    }
+
+    uintmax_t remainingBytes = fileSize_ - currentPosition_;
+    uintmax_t bytesToRead = std::min(kDownloadChunkSize, remainingBytes);
+    if (bytesToRead == 0) {
+        isComplete_ = true;
+        return false;
+    }
+
+    std::vector<char> buffer;
+    bool cacheHit = false;
+
+    // 如果是学习场景，先去缓存里找找看
+    if (shouldUsePrefetchCache()) {
+        cacheHit = prefetchCache_->get(buildCacheKey(currentPosition_), buffer);
+        if (cacheHit && buffer.size() > bytesToRead) {
+            buffer.resize(bytesToRead);
+        }
+    }
+
+    if (!cacheHit) {
+        buffer.resize(bytesToRead);
+        ssize_t readBytes = ::pread(fd_, buffer.data(), bytesToRead,
+                                    static_cast<off_t>(currentPosition_));
+        if (readBytes <= 0) {
+            isComplete_ = true;
+            return false;
+        }
+        buffer.resize(static_cast<size_t>(readBytes));
+    }
+
+    chunk.assign(buffer.data(), buffer.size());
+    currentPosition_ += buffer.size();
+    if (currentPosition_ >= fileSize_) {
+        isComplete_ = true;
+    }
+
+    // 核心创新点：触发异步预取！
+    // 如果是学习场景，我不仅把当前这块发给用户，我还要派个小弟去把后面的数据提前读出来！
+    if (shouldUsePrefetchCache()) {
+        schedulePrefetchWindow(currentPosition_);
+    }
+
+    LOG_INFO << (cacheHit ? "Prefetch cache hit" : "Disk read")
+             << ", bytes: " << buffer.size()
+             << ", current position: " << currentPosition_ << "/" << fileSize_;
+    return true;
+}
+
+bool FileDownContext::shouldUsePrefetchCache() const {
+    return sceneTag_ == "learning" && prefetchCache_ != nullptr &&
+           fileSize_ > kLearningLargeFileThreshold;
+}
+
+std::string FileDownContext::buildCacheKey(uintmax_t offset) const {
+    return filepath_ + "_" + std::to_string(offset);
+}
+
+void FileDownContext::schedulePrefetchWindow(uintmax_t nextOffset) const {
+    if (!shouldUsePrefetchCache() || nextOffset >= fileSize_) {
+        return;
+    }
+
+    // 确保线程池指针不为空
+    if (!ioThreadPool_) {
+        LOG_WARN << "IO ThreadPool is null, skipping prefetch";
+        return;
+    }
+
+    std::string filepath = filepath_;
+    uintmax_t fileSize = fileSize_;
+    auto cache = prefetchCache_;
+
+    ioThreadPool_->run([filepath, fileSize, nextOffset, cache]() {
+        int fd = ::open(filepath.c_str(), O_RDONLY);
+        if (fd < 0) {
+            return;
+        }
+
+        uintmax_t offset = nextOffset;
+        for (int i = 0; i < kLearningPrefetchChunkCount && offset < fileSize;
+             i++) {
+            uintmax_t bytesToRead =
+                std::min(kDownloadChunkSize, fileSize - offset);
+            std::string key = filepath + "_" + std::to_string(offset);
+            if (!cache->tryMarkLoading(key)) {
+                offset += bytesToRead;
+                continue;
+            }
+
+            std::vector<char> buffer(bytesToRead);
+            ssize_t readBytes = ::pread(fd, buffer.data(), bytesToRead,
+                                        static_cast<off_t>(offset));
+            if (readBytes <= 0) {
+                cache->cancelLoading(key);
+                offset += bytesToRead;
+                continue;
+            }
+
+            buffer.resize(static_cast<size_t>(readBytes));
+            cache->put(key, std::move(buffer));
+            offset += static_cast<uintmax_t>(readBytes);
+        }
+
+        ::close(fd);
+    });
+}
+
 // --------------Handler--------------
-DataNodeHttpHandler::DataNodeHttpHandler(DataNode *datanode)
-    : uploadDir_("uploads"), datanode_(datanode) {
+DataNodeHttpHandler::DataNodeHttpHandler(DataNode *datanode, int numThreads)
+    : uploadDir_("uploads"), datanode_(datanode),
+      prefetchCache_(std::make_shared<PrefetchCache>()),
+      threadPool_("DNHttpHandlerThreadPool") {
+    threadPool_.start(numThreads);
     // 创建上传目录
     if (!fs::exists(uploadDir_)) {
         LOG_DEBUG << "创建上传目录: " << uploadDir_;
@@ -424,8 +582,9 @@ bool DataNodeHttpHandler::handleFileDownload(
     auto transferState = std::make_shared<ConnectionTransferState>();
 
     auto downContext = std::make_shared<FileDownContext>(
-        filepath, downloadPayload.original_filename,
-        buildRateLimiter(downloadPayload.qos_policy));
+        filepath, downloadPayload.original_filename, downloadPayload.scene_tag,
+        buildRateLimiter(downloadPayload.qos_policy), prefetchCache_,
+        &threadPool_);
     downContext->seekTo(startPos);
     transferState->downloadContext = downContext;
 

@@ -29,7 +29,7 @@ class MasterHttpHandler : public BaseHandler {
     std::string uploadDir_; // 上传目录
 
   public:
-    MasterHttpHandler(int numThreads);
+    MasterHttpHandler(int numThreads = 4);
 
     ~MasterHttpHandler();
 

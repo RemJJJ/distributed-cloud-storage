@@ -1,6 +1,7 @@
 #include "FileHandler.h"
 #include "AsyncDeleteTask.h"
 #include "NodeManager.h"
+#include "SceneProfileService.h"
 #include "TokenManager.h"
 #include "db/MySQLPool.h"
 #include "db/MySQLStatement.h"
@@ -69,6 +70,8 @@ bool FileHandler::handleListFiles(
                   fn::HttpResponse::k500InternalServerError, conn);
         return true;
     }
+    std::string sceneTag =
+        SceneProfileService::instance().getUserSceneTag(*mysql, userId);
 
     // 动态构建SQL语句
     std::string sql =
@@ -157,6 +160,7 @@ bool FileHandler::handleListFiles(
     response["code"] = 0;
     response["message"] = "Success";
     response["files"] = files;
+    response["sceneTag"] = sceneTag;
 
     resp->setStatusCode(fileserver::net::HttpResponse::k200Ok);
     resp->setStatusMessage("OK");
@@ -423,10 +427,13 @@ bool FileHandler::handleFileDownload(
         return true;
     }
 
+    int fileId = rs->getInt(0);
     std::string nodeId = rs->getString(1);
     std::string original_filename = rs->getString(2);
     uintmax_t fileSize = rs->getInt64(3);
     std::string serviceLevel = fetchUserServiceLevel(*mysql, userId);
+    std::string sceneTag =
+        SceneProfileService::instance().getUserSceneTag(*mysql, userId);
 
     // 获取 DataNode 地址
     LOG_DEBUG << "nodeId: " << nodeId;
@@ -436,8 +443,10 @@ bool FileHandler::handleFileDownload(
                   fn::HttpResponse::k500InternalServerError, conn);
         return true;
     }
+    SceneProfileService::instance().incrementDownloadCount(*mysql, fileId);
     auto fileResponse = TokenManager::instance().generateDownloadToken(
         userId, original_filename, serverFilename,
+        sceneTag,
         NodeManager::instance().buildQoSPolicy(serviceLevel, true));
 
     // 返回 DataNode 播放地址

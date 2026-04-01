@@ -1,19 +1,23 @@
 #pragma once
 #include "BaseHandler.h"
 #include "FileStorage.h"
+#include "PrefetchCache.h"
 #include "TokenBucketRateLimiter.h"
 #include "base/Logging.h"
+#include "base/Thread.h"
+#include "base/ThreadPool.h"
 #include "net/EventLoop.h"
 #include "net/HttpContext.h"
 #include "net/HttpRequest.h"
 #include "net/HttpResponse.h"
 #include "net/HttpServer.h"
-#include <fstream>
 #include <memory>
 #include <nlohmann/json.hpp>
-#include <optional>
 #include <ratio>
 #include <regex>
+#include <string>
+#include <unordered_map>
+#include <vector>
 
 namespace fs = std::filesystem;
 
@@ -86,62 +90,16 @@ class FileDownContext {
   public:
     FileDownContext(const std::string &filepath,
                     const std::string &originalFilename,
-                    std::shared_ptr<TokenBucketRateLimiter> rateLimiter)
-        : filepath_(filepath), originalFilename_(originalFilename),
-          rateLimiter_(std::move(rateLimiter)), fileSize_(0),
-          currentPosition_(0), isComplete_(false) {
-        // 获取文件大小
-        fileSize_ = fs::file_size(filepath_);
+                    const std::string &sceneTag,
+                    std::shared_ptr<TokenBucketRateLimiter> rateLimiter,
+                    std::shared_ptr<PrefetchCache> prefetchCache,
+                    ThreadPool *ioThreadPool);
 
-        // 打开文件
-        file_.open(filepath_, std::ios::binary | std::ios::in);
-        if (!file_.is_open()) {
-            LOG_ERROR << "Failed to open file: " << filepath_;
-            throw std::runtime_error("Failed to open file: " + filepath_);
-        }
-        LOG_INFO << "Opening file for download: " << filepath_
-                 << ", size: " << fileSize_;
-    }
+    ~FileDownContext();
 
-    ~FileDownContext() {
-        if (file_.is_open()) {
-            file_.close();
-        }
-    }
+    void seekTo(uintmax_t position);
 
-    void seekTo(uintmax_t position) {
-        if (!file_.is_open()) {
-            throw std::runtime_error("File is not open: " + filepath_);
-        }
-        file_.seekg(position);
-        currentPosition_ = position;
-        isComplete_ = false;
-    }
-
-    bool readNextChunk(std::string &chunk) {
-        if (!file_.is_open() || isComplete_) {
-            return false;
-        }
-
-        const uintmax_t chunkSize = 1024 * 1024; // 1MB
-        uintmax_t remainingBytes = fileSize_ - currentPosition_;
-        uintmax_t bytesToRead = std::min(chunkSize, remainingBytes);
-
-        if (bytesToRead == 0) {
-            isComplete_ = true;
-            return false;
-        }
-
-        std::vector<char> buffer(bytesToRead);
-        file_.read(buffer.data(), bytesToRead);
-        chunk.assign(buffer.data(), bytesToRead);
-        currentPosition_ += bytesToRead;
-
-        LOG_INFO << "Read chunk of " << bytesToRead
-                 << " bytes, current position: " << currentPosition_ << "/"
-                 << fileSize_;
-        return true;
-    }
+    bool readNextChunk(std::string &chunk);
 
     bool isComplete() const { return isComplete_; }
     uintmax_t getCurrentPosition() const { return currentPosition_; }
@@ -161,14 +119,23 @@ class FileDownContext {
     }
 
   private:
+    bool shouldUsePrefetchCache() const;
+    std::string buildCacheKey(uintmax_t offset) const;
+    void schedulePrefetchWindow(uintmax_t nextOffset) const;
+
     std::string filepath_;         // 文件路径
     std::string originalFilename_; // 原始文件名
-    std::ifstream file_;           // 文件流
+    std::string sceneTag_;
+    int fd_ = -1;
     std::shared_ptr<TokenBucketRateLimiter> rateLimiter_;
+    std::shared_ptr<PrefetchCache> prefetchCache_;
     uintmax_t fileSize_;        // 文件总大小
     uintmax_t currentPosition_; // 当前读取位置
     bool isComplete_;           // 是否完成
     bool transferCounterReleased_ = false;
+
+    // 线程池指针
+    ThreadPool *ioThreadPool_;
 };
 
 struct ConnectionTransferState {
@@ -182,13 +149,16 @@ class DataNodeHttpHandler : public BaseHandler {
   private:
     std::string uploadDir_; // 上传目录
     DataNode *datanode_;
+    std::shared_ptr<PrefetchCache> prefetchCache_;
 
     std::mutex transferMutex_; // 连接数锁
     std::unordered_map<std::string, std::shared_ptr<ConnectionTransferState>>
         activeTransfers_;
 
+    ThreadPool threadPool_;
+
   public:
-    DataNodeHttpHandler(DataNode *datanode);
+    DataNodeHttpHandler(DataNode *datanode, int numThreads = 4);
 
     ~DataNodeHttpHandler();
 

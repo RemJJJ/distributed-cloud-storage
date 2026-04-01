@@ -1,5 +1,6 @@
 #pragma once
 #include "HandlerUtils.h"
+#include "base/ThreadPool.h"
 #include "net/Callbacks.h"
 #include "net/HttpRequest.h"
 #include "net/HttpResponse.h"
@@ -10,7 +11,7 @@ namespace fn = fileserver::net;
 
 class UserHandler : public handlerUtils {
   public:
-    UserHandler();
+    UserHandler(fileserver::ThreadPool *threadPool);
 
     // 用户注册
     bool handleRegister(const fn::TcpConnectionPtr &conn, fn::HttpRequest &req,
@@ -61,4 +62,6 @@ class UserHandler : public handlerUtils {
     void ensureServiceLevelColumn();
     std::string generateShareCode();
     std::string generateExtractCode();
+
+    fileserver::ThreadPool *threadPool_;
 };

@@ -124,7 +124,7 @@ void MasterHttpHandler::initRoutes() {
              {"share_id"}); // 捕获 share_id
 
     // UserHandler
-    auto userHandler = std::make_shared<UserHandler>();
+    auto userHandler = std::make_shared<UserHandler>(&threadPool_);
     addRoute("/register", HttpRequest::kPost,
              [userHandler](const TcpConnectionPtr &conn, HttpRequest &req,
                            std::shared_ptr<HttpResponse> &resp) {
