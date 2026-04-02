@@ -38,12 +38,14 @@ bool DataNodeHandler::handleRegisterNode(
         }
         std::string node_ip = json["ip"].get<std::string>();
         uint16_t node_port = json["port"].get<uint16_t>();
+        std::string public_url = json.value("public_url", "");
 
         // 提取DataNode传来的老ID
         std::string reported_node_id = json.value("node_id", "");
         fn::InetAddress addr(node_ip, node_port);
         auto RegisterResponse =
-            NodeManager::instance().registerNode(reported_node_id, addr);
+            NodeManager::instance().registerNode(reported_node_id, addr,
+                                                public_url);
 
         if (RegisterResponse.node_id.empty()) {
             sendError(resp, "Failed to generate token",
@@ -118,6 +120,7 @@ bool DataNodeHandler::handleHeartbeat(const fn::TcpConnectionPtr &conn,
 
         std::string node_ip = jsonData["ip"].get<std::string>();
         uint16_t node_port = jsonData["port"].get<uint16_t>();
+        std::string public_url = jsonData.value("public_url", "");
 
         // 解析调度指标
         uint64_t disk_total = jsonData.value("disk_total_mb", 0ULL);
@@ -132,7 +135,7 @@ bool DataNodeHandler::handleHeartbeat(const fn::TcpConnectionPtr &conn,
         NodeManager::instance().updateHeartbeat(node_id, newAddr, disk_total,
                                                 disk_free, active_uploads,
                                                 active_downloads,
-                                                active_transfers);
+                                                active_transfers, public_url);
 
         LOG_INFO << "心跳更新成功：" << node_id << " @ " << newAddr.toIpPort();
     } catch (const json::parse_error &e) {

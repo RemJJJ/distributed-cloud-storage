@@ -21,6 +21,13 @@ namespace {
 std::string normalizeServiceLevel(const std::string &serviceLevel) {
     return serviceLevel == "vip" ? "vip" : "normal";
 }
+
+std::string buildNodeAccessBaseUrl(const std::shared_ptr<DataNodeInfo> &node) {
+    if (node && !node->publicUrl_.empty()) {
+        return node->publicUrl_;
+    }
+    return "http://" + node->addr_.toIpPort();
+}
 } // namespace
 
 UserHandler::UserHandler(fileserver::ThreadPool *threadPool)
@@ -847,7 +854,7 @@ bool UserHandler::handleShareVerify(const fn::TcpConnectionPtr &conn,
         json response = {
             {"code", 0},
             {"data",
-             {{"downloadUrl", "http://" + nodeInfo->addr_.toIpPort() +
+             {{"downloadUrl", buildNodeAccessBaseUrl(nodeInfo) +
                                   "/api/datanode/download"},
               {"token", downloadToken}}}};
 

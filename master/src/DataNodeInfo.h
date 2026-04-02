@@ -12,6 +12,7 @@ namespace fn = fileserver::net;
 
 struct DataNodeInfo {
     fn::InetAddress addr_;
+    std::string publicUrl_;               // 给前端访问用的公网地址
     std::string id_;                      // 节点唯一ID
     fileserver::Timestamp lastHeartbeat_; // 最后一次心跳时间
     bool isAlive_;                        // 是否存活

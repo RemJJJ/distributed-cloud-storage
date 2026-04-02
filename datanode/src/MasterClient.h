@@ -13,7 +13,8 @@ namespace fn = fileserver::net;
 class MasterClient {
   public:
     MasterClient(fn::EventLoop *loop, const fn::InetAddress &masterAddr,
-                 const fn::InetAddress &myAddr, DataNode *datanode);
+                 const fn::InetAddress &myAddr,
+                 const std::string &publicUrl, DataNode *datanode);
     ~MasterClient();
 
     /// @brief 启动：发起对 Master 的连接
@@ -89,6 +90,7 @@ class MasterClient {
 
     fn::InetAddress masterAddr_;
     fn::InetAddress myAddr_;
+    std::string publicUrl_;
 
     // -----------------新增成员变量-----------------
     std::string nodeId_;                  // 注册后获得的节点ID

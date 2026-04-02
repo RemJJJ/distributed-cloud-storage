@@ -60,7 +60,8 @@ bool NodeManager::isInitialized() { return instance().initialized_; }
 
 TokenManager::nodeRegisterResponse
 NodeManager::registerNode(const std::string &reported_node_id,
-                          const fn::InetAddress &addr) {
+                          const fn::InetAddress &addr,
+                          const std::string &public_url) {
     std::string final_node_id;
 
     {
@@ -74,14 +75,19 @@ NodeManager::registerNode(const std::string &reported_node_id,
             if (nodes_.find(final_node_id) == nodes_.end()) {
                 auto info = std::make_shared<DataNodeInfo>(addr);
                 info->id_ = final_node_id;
+                info->publicUrl_ = public_url;
                 nodes_[final_node_id] = info;
             } else {
                 // 如果内存里有，更新它的最新IP地址
                 nodes_[final_node_id]->addr_ = addr;
+                if (!public_url.empty()) {
+                    nodes_[final_node_id]->publicUrl_ = public_url;
+                }
             }
         } else {
             // 全新节点
             auto info = std::make_shared<DataNodeInfo>(addr);
+            info->publicUrl_ = public_url;
             final_node_id = info->id_;
             nodes_[final_node_id] = info;
         }
@@ -101,7 +107,8 @@ void NodeManager::updateHeartbeat(const std::string &node_id,
                                   const fn::InetAddress &newAddr,
                                   uint64_t disk_total, uint64_t disk_free,
                                   int active_uploads, int active_downloads,
-                                  int active_transfers) {
+                                  int active_transfers,
+                                  const std::string &public_url) {
     std::lock_guard<std::mutex> lock(mutex_);
 
     auto it = nodes_.find(node_id);
@@ -124,6 +131,11 @@ void NodeManager::updateHeartbeat(const std::string &node_id,
             LOG_INFO << "Address of datanode changed: " << node_id << " -> "
                      << newAddr.toIpPort();
             it->second->addr_ = newAddr;
+        }
+        if (!public_url.empty() && it->second->publicUrl_ != public_url) {
+            LOG_INFO << "Public URL of datanode changed: " << node_id << " -> "
+                     << public_url;
+            it->second->publicUrl_ = public_url;
         }
         refreshClusterQosModeLocked();
     } else {

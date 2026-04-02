@@ -15,6 +15,13 @@ std::string normalizeServiceLevel(const std::string &serviceLevel) {
     return serviceLevel == "vip" ? "vip" : "normal";
 }
 
+std::string buildNodeAccessBaseUrl(const std::shared_ptr<DataNodeInfo> &node) {
+    if (node && !node->publicUrl_.empty()) {
+        return node->publicUrl_;
+    }
+    return "http://" + node->addr_.toIpPort();
+}
+
 std::string fetchUserServiceLevel(db::MySQLPool::ConnectionGuard &mysql,
                                   int userId) {
     std::string sql = "SELECT service_level FROM users WHERE id = ? LIMIT 1";
@@ -343,7 +350,7 @@ bool FileHandler::handleFileUpload(
             {"data",
              {{"fileId", fileId},
               {"uploadUrl",
-               "http://" + dataNode->addr_.toIpPort() + "/api/datanode/upload"},
+               buildNodeAccessBaseUrl(dataNode) + "/api/datanode/upload"},
               {"uploadToken", fileUploadResponse.token}}}};
 
         std::string bodyStr = response.dump();
@@ -354,6 +361,9 @@ bool FileHandler::handleFileUpload(
                         std::to_string(bodyStr.size())); // 别忘了这个！
 
         LOG_INFO << "分配 DataNode 成功: " << dataNode->addr_.toIpPort()
+                 << ", public_url="
+                 << (dataNode->publicUrl_.empty() ? "(fallback to internal)"
+                                                 : dataNode->publicUrl_)
                  << " 给文件 ID: " << fileId;
         return true;
     } catch (const json::parse_error &e) {
@@ -452,7 +462,7 @@ bool FileHandler::handleFileDownload(
     // 返回 DataNode 播放地址
     json response = {{"code", 0},
                      {"data",
-                      {{"downloadUrl", "http://" + nodeInfo->addr_.toIpPort() +
+                      {{"downloadUrl", buildNodeAccessBaseUrl(nodeInfo) +
                                            "/api/datanode/download"},
                        {"token", fileResponse},
                        {"fileSize", fileSize}}}};

@@ -40,13 +40,15 @@ class NodeManager {
     ///@brief 注册节点
     TokenManager::nodeRegisterResponse
     registerNode(const std::string &reported_node_id,
-                 const fn::InetAddress &addr);
+                 const fn::InetAddress &addr,
+                 const std::string &public_url = "");
 
     ///@brief 更新心跳
     void updateHeartbeat(const std::string &node_id,
                          const fn::InetAddress &newAddr, uint64_t disk_total,
                          uint64_t disk_free, int active_uploads,
-                         int active_downloads, int active_transfers);
+                         int active_downloads, int active_transfers,
+                         const std::string &public_url = "");
 
     ///@brief 启动超时检测定时器（在 Master 启动时调用一次）
     void startTimeoutChecker(fn::EventLoop *loop, double interval = 5.0);

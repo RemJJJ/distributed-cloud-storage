@@ -21,8 +21,16 @@
 DataNode::DataNode(fn::EventLoop *loop, const fn::InetAddress &listenAddr,
                    const fn::InetAddress &masterAddr)
     : loop_(loop) {
-    masterClient_ =
-        std::make_unique<MasterClient>(loop, masterAddr, listenAddr, this);
+    std::string publicUrl =
+        Config::instance().getString("datanode.public_url");
+    if (publicUrl.empty()) {
+        publicUrl = "http://" + listenAddr.toIpPort();
+    } else if (!publicUrl.empty() && publicUrl.back() == '/') {
+        publicUrl.pop_back();
+    }
+    masterClient_ = std::make_unique<MasterClient>(loop, masterAddr,
+                                                   listenAddr, publicUrl,
+                                                   this);
     datanodeServer_ =
         std::make_unique<fn::HttpServer>(loop, listenAddr, "datanodeServer");
     handler_ = std::make_shared<DataNodeHttpHandler>(this);
@@ -163,14 +171,18 @@ int main(int argc, char *argv[]) {
         return -1;
     }
 
-    // 获取自身IP
-    std::string local_ip = getLocalInternalIP();
+    // 获取自身内网IP：优先读配置，未配置时自动探测。
+    std::string local_ip = Config::instance().getString("datanode.local_host");
+    if (local_ip.empty()) {
+        local_ip = getLocalInternalIP();
+    }
     LOG_INFO << "Local listen IP: " << local_ip;
 
     EventLoop loop;
 
     // 3. 配置地址
-    fileserver::net::InetAddress listenAddr(local_ip, 9000); // DataNoded地址
+    fileserver::net::InetAddress listenAddr(
+        local_ip, Config::instance().getInt("datanode.local_port", 9000));
     fileserver::net::InetAddress masterAddr(
         Config::instance().getString("master.ip"),
         Config::instance().getInt("master.port")); // Master 地址

@@ -16,11 +16,12 @@ namespace fs = std::filesystem;
 
 MasterClient::MasterClient(fn::EventLoop *loop,
                            const fn::InetAddress &masterAddr,
-                           const fn::InetAddress &myAddr, DataNode *datanode)
+                           const fn::InetAddress &myAddr,
+                           const std::string &publicUrl, DataNode *datanode)
     : loop_(loop), datanode_(datanode),
       client_(std::make_unique<fn::TcpClient>(loop, masterAddr,
                                               "MasterClient - TcpClient")),
-      masterAddr_(masterAddr), myAddr_(myAddr) {
+      masterAddr_(masterAddr), myAddr_(myAddr), publicUrl_(publicUrl) {
     client_->setConnectionCallback(
         std::bind(&MasterClient::onConnection, this, std::placeholders::_1));
     client_->setMessageCallback(
@@ -210,8 +211,10 @@ void MasterClient::checkTokenExpired() {
 }
 
 void MasterClient::registerNode() {
-    json request = {
-        {"ip", myAddr_.toIp()}, {"port", myAddr_.port()}, {"status", "active"}};
+    json request = {{"ip", myAddr_.toIp()},
+                    {"port", myAddr_.port()},
+                    {"status", "active"},
+                    {"public_url", publicUrl_}};
 
     std::string currentId = getNodeId();
     if (!currentId.empty()) {
@@ -266,6 +269,7 @@ void MasterClient::sendHeartbeat() {
         {"node_id", currentNodeId},
         {"ip", myAddr_.toIp()},
         {"port", myAddr_.port()},
+        {"public_url", publicUrl_},
         {"disk_total_mb", diskTotalMb},
         {"disk_free_mb", diskFreeMb},
         {"active_uploads", activeUploads},
