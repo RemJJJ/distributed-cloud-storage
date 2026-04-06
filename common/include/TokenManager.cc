@@ -204,6 +204,25 @@ TokenManager::generateDeleteToken(const std::string &server_filename) {
         .sign(jwt::algorithm::hs256{secretKey_});
 }
 
+std::string TokenManager::generateHotCacheToken(
+    const std::string &server_filename, uint64_t preload_bytes,
+    bool vip_priority) {
+    auto now = std::chrono::system_clock::now();
+    return jwt::create()
+        .set_issuer("fileserver_master")
+        .set_type("JWT")
+        .set_payload_claim("token_type", jwt::claim(std::string("hot_cache")))
+        .set_payload_claim("server_filename", jwt::claim(server_filename))
+        .set_payload_claim("preload_bytes",
+                           jwt::claim(std::to_string(preload_bytes)))
+        .set_payload_claim(
+            "vip_priority",
+            jwt::claim(std::string(vip_priority ? "1" : "0")))
+        .set_issued_at(now)
+        .set_expires_at(now + std::chrono::minutes(5))
+        .sign(jwt::algorithm::hs256{secretKey_});
+}
+
 // ================= 基础验证逻辑 =================
 
 TokenManager::verifyResult TokenManager::verifyToken(const std::string &token) {
@@ -327,6 +346,31 @@ bool TokenManager::verifyDeleteToken(const std::string &token,
     }
     out_server_filename = result.payload.value("server_filename", "");
     return !out_server_filename.empty();
+}
+
+bool TokenManager::verifyHotCacheToken(const std::string &token,
+                                       hotCacheTokenPayload &out_payload) {
+    auto result = verifyToken(token);
+    if (!result.success ||
+        result.payload.value("token_type", "") != "hot_cache") {
+        return false;
+    }
+
+    out_payload.server_filename =
+        result.payload.value("server_filename", "");
+    const std::string preloadBytes =
+        result.payload.value("preload_bytes", std::string("0"));
+    const std::string vipPriority =
+        result.payload.value("vip_priority", std::string("0"));
+
+    try {
+        out_payload.preload_bytes = std::stoull(preloadBytes);
+    } catch (...) {
+        out_payload.preload_bytes = 0;
+    }
+    out_payload.vip_priority = (vipPriority == "1" || vipPriority == "true");
+    return !out_payload.server_filename.empty() &&
+           out_payload.preload_bytes > 0;
 }
 
 TokenManager::QoSPolicy

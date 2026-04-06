@@ -38,6 +38,12 @@ class TokenManager {
         QoSPolicy qos_policy;
     };
 
+    struct hotCacheTokenPayload {
+        std::string server_filename;
+        uint64_t preload_bytes = 0;
+        bool vip_priority = false;
+    };
+
     struct userLoginResponse {
         std::string user_id;
         std::string token;
@@ -122,6 +128,11 @@ class TokenManager {
     /// @brief 生成文件删除Token
     std::string generateDeleteToken(const std::string &server_filename);
 
+    /// @brief 生成热点缓存预热 Token
+    std::string generateHotCacheToken(const std::string &server_filename,
+                                      uint64_t preload_bytes,
+                                      bool vip_priority);
+
     /// @brief 基础验证
     verifyResult verifyToken(const std::string &token);
 
@@ -142,6 +153,10 @@ class TokenManager {
     /// @brief 验证删除文件Token
     bool verifyDeleteToken(const std::string &token,
                            std::string &out_server_filename);
+
+    /// @brief 验证热点缓存预热 Token
+    bool verifyHotCacheToken(const std::string &token,
+                             hotCacheTokenPayload &out_payload);
 
     /// @brief 检查是否有效
     bool isValid(const std::string &token);

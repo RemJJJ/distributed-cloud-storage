@@ -2,6 +2,7 @@
 #include "DataNode.h"
 #include "LocalFileStorage.h"
 #include "MasterClient.h"
+#include "PrefetchCache.h"
 #include "TokenManager.h"
 #include "base/ThreadPool.h"
 #include "net/Callbacks.h"
@@ -216,7 +217,7 @@ uintmax_t FileDownContext::getPrefetchWindowBytes() const {
 
 uintmax_t FileDownContext::getPrefetchLowWaterBytes() const {
     const uintmax_t windowBytes = getPrefetchWindowBytes();
-    return std::max<uintmax_t>(kDownloadChunkSize, windowBytes / 2);
+    return std::max<uintmax_t>(kDownloadChunkSize, windowBytes * 0.4);
 }
 
 std::string FileDownContext::buildCacheKey(uintmax_t offset) const {
@@ -239,6 +240,8 @@ void FileDownContext::schedulePrefetchWindow(uintmax_t nextOffset) {
     if (safeBytes > lowWaterBytes) {
         LOG_INFO << "Global cache is sufficient (safety margin:" << safeBytes
                  << " > lowWater:" << lowWaterBytes << "), skip prefetch";
+        LOG_INFO << "CurrentOffset:" << nextOffset
+                 << "; Total:" << prefetchCache_->currentBytes();
         return;
     }
     // 确保线程池指针不为空
@@ -360,6 +363,11 @@ void DataNodeHttpHandler::initRoutes() {
              [this](const TcpConnectionPtr &conn, HttpRequest &req,
                     std::shared_ptr<HttpResponse> &resp) {
                  return handleTextPreview(conn, req, resp);
+             });
+    addRoute("/api/datanode/hot_cache", HttpRequest::kPost,
+             [this](const TcpConnectionPtr &conn, HttpRequest &req,
+                    std::shared_ptr<HttpResponse> &resp) {
+                 return handleHotCache(conn, req, resp);
              });
     addRoute("/api/datanode/delete", fileserver::net::HttpRequest::kPost,
              [this](const TcpConnectionPtr &conn, HttpRequest &req,
@@ -769,6 +777,129 @@ bool DataNodeHttpHandler::handleTextPreview(
     resp->setBody(content);
     resp->addHeader("Content-Length", std::to_string(content.size()));
     return true;
+}
+
+bool DataNodeHttpHandler::handleHotCache(const TcpConnectionPtr &conn,
+                                         HttpRequest &req,
+                                         std::shared_ptr<HttpResponse> &resp) {
+    if (req.method() != HttpRequest::kPost ||
+        req.path() != "/api/datanode/hot_cache") {
+        return false;
+    }
+
+    std::string authHeader = req.getHeader("Authorization");
+    if (authHeader.empty() || authHeader.substr(0, 7) != "Bearer ") {
+        sendError(resp, "未授权", HttpResponse::k401Unauthorized, conn);
+        return true;
+    }
+
+    TokenManager::hotCacheTokenPayload hotPayload;
+    if (!TokenManager::instance().verifyHotCacheToken(authHeader.substr(7),
+                                                      hotPayload)) {
+        sendError(resp, "热点缓存 Token 无效或已过期",
+                  HttpResponse::k403Forbidden, conn);
+        return true;
+    }
+
+    const std::string filepath = uploadDir_ + "/" + hotPayload.server_filename;
+    if (!fs::exists(filepath) || !fs::is_regular_file(filepath)) {
+        sendError(resp, "文件不存在", HttpResponse::k404NotFound, conn);
+        return true;
+    }
+
+    scheduleHotCacheWarmup(hotPayload.server_filename, hotPayload.preload_bytes,
+                           hotPayload.vip_priority);
+
+    nlohmann::json body = {{"code", 0},
+                           {"message", "hot cache scheduled"},
+                           {"server_filename", hotPayload.server_filename},
+                           {"preload_bytes", hotPayload.preload_bytes},
+                           {"vip_priority", hotPayload.vip_priority}};
+    const std::string bodyStr = body.dump();
+    resp->setStatusCode(HttpResponse::k200Ok);
+    resp->setContentType("application/json");
+    resp->setBody(bodyStr);
+    resp->addHeader("Content-Length", std::to_string(bodyStr.size()));
+    conn->setWriteCompleteCallback([](const TcpConnectionPtr &connection) {
+        connection->shutdown();
+        return true;
+    });
+    return true;
+}
+
+void DataNodeHttpHandler::scheduleHotCacheWarmup(
+    const std::string &serverFilename, uint64_t preloadBytes,
+    bool vipPriority) {
+    if (!prefetchCache_ || preloadBytes == 0) {
+        return;
+    }
+
+    const std::string filepath = uploadDir_ + "/" + serverFilename;
+    const auto cache = prefetchCache_;
+
+    threadPool_.run([filepath, preloadBytes, vipPriority, cache]() {
+        LOG_INFO << "preloadBytes:" << preloadBytes;
+        try {
+            if (!fs::exists(filepath) || !fs::is_regular_file(filepath)) {
+                LOG_WARN << "Skip hot cache warmup because file is missing: "
+                         << filepath;
+                return;
+            }
+
+            const uintmax_t fileSize = fs::file_size(filepath);
+            const uintmax_t targetBytes =
+                std::min<uintmax_t>(fileSize, preloadBytes);
+            if (targetBytes == 0) {
+                return;
+            }
+
+            int fd = ::open(filepath.c_str(), O_RDONLY);
+            if (fd < 0) {
+                LOG_WARN << "Open file for hot cache warmup failed: "
+                         << filepath << ", errno=" << std::strerror(errno);
+                return;
+            }
+
+            uintmax_t offset = 0;
+            uintmax_t warmedBytes = 0;
+            while (offset < targetBytes) {
+                const uintmax_t bytesToRead = std::min<uintmax_t>(
+                    kDownloadChunkSize, targetBytes - offset);
+                const std::string key = filepath + "_" + std::to_string(offset);
+
+                if (!cache->shouldAdmitPrefetch(
+                        static_cast<size_t>(bytesToRead), vipPriority)) {
+                    break;
+                }
+                if (!cache->tryMarkLoading(key)) {
+                    offset += bytesToRead;
+                    continue;
+                }
+
+                std::vector<char> buffer(bytesToRead);
+                const ssize_t readBytes = ::pread(
+                    fd, buffer.data(), bytesToRead, static_cast<off_t>(offset));
+                if (readBytes <= 0) {
+                    cache->cancelLoading(key);
+                    break;
+                }
+
+                buffer.resize(static_cast<size_t>(readBytes));
+                cache->put(key, std::move(buffer), vipPriority);
+                offset += static_cast<uintmax_t>(readBytes);
+                warmedBytes += static_cast<uintmax_t>(readBytes);
+            }
+
+            ::close(fd);
+            LOG_INFO << "Hot cache warmup finished. file=" << filepath
+                     << ", warmed_bytes=" << warmedBytes
+                     << ", vip_priority=" << vipPriority
+                     << ", cache_bytes=" << cache->currentBytes();
+        } catch (const std::exception &e) {
+            LOG_ERROR << "Hot cache warmup failed for " << filepath << ": "
+                      << e.what();
+        }
+    });
 }
 
 bool DataNodeHttpHandler::handleDeleteFile(

@@ -186,11 +186,16 @@ class DataNodeHttpHandler : public BaseHandler {
     bool handleTextPreview(const TcpConnectionPtr &conn, HttpRequest &req,
                            std::shared_ptr<HttpResponse> &resp);
 
+    bool handleHotCache(const TcpConnectionPtr &conn, HttpRequest &req,
+                        std::shared_ptr<HttpResponse> &resp);
+
     /// @brief 处理文件删除
     bool handleDeleteFile(const TcpConnectionPtr &conn, HttpRequest &req,
                           std::shared_ptr<HttpResponse> &resp);
 
     bool isPreviewableTextFile(const std::string &filename) const;
+    void scheduleHotCacheWarmup(const std::string &serverFilename,
+                                uint64_t preloadBytes, bool vipPriority);
 
     std::string getMimeType(const std::string &filename);
 };

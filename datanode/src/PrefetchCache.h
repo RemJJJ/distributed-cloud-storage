@@ -267,7 +267,7 @@ class PrefetchCache {
     }
 
     static constexpr size_t kVipReservedBytes = 100 * 1024 * 1024;
-    static constexpr auto kEntryTtl = std::chrono::minutes(2);
+    static constexpr auto kEntryTtl = std::chrono::minutes(10);
 
     mutable std::mutex mutex_; // 全局互斥锁
     size_t maxBytes_;

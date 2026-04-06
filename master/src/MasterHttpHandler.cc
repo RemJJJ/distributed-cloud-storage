@@ -1,7 +1,9 @@
 #include "MasterHttpHandler.h"
 #include "AsyncDeleteTask.h"
+#include "AsyncHotCacheTask.h"
 #include "DataNodeHandler.h"
 #include "FileHandler.h"
+#include "HotCacheService.h"
 #include "NodeManager.h"
 #include "TokenManager.h"
 #include "db/MySQLPool.h"
@@ -53,6 +55,7 @@ bool hasOtherPhysicalReferences(db::MySQLPool::ConnectionGuard &mysql, int fileI
 MasterHttpHandler::MasterHttpHandler(int numThreads)
     : threadPool_("UploadHandler"), uploadDir_("uploads") {
     threadPool_.start(numThreads);
+    HotCacheService::instance().init();
 
     // 创建上传目录
     if (!fs::exists(uploadDir_)) {
@@ -170,6 +173,35 @@ void MasterHttpHandler::processStaleUploadingFiles(EventLoop *loop) {
     if (taskCount > 0 || cleanedRows > 0) {
         LOG_INFO << "Stale uploading cleanup scheduled=" << taskCount
                  << ", cleaned_db_only=" << cleanedRows;
+    }
+}
+
+void MasterHttpHandler::processHotCacheTasks(EventLoop *loop) {
+    auto tasks = HotCacheService::instance().collectDispatchTasks();
+    if (tasks.empty()) {
+        return;
+    }
+
+    for (const auto &task : tasks) {
+        auto nodeInfo = NodeManager::instance().getNodeInfo(task.nodeId);
+        if (!nodeInfo || !nodeInfo->isAlive_) {
+            LOG_WARN << "Skip hot cache dispatch because node is offline. "
+                        "file_id="
+                     << task.fileId << ", node_id=" << task.nodeId;
+            continue;
+        }
+
+        const std::string token = TokenManager::instance().generateHotCacheToken(
+            task.serverFilename, task.preloadBytes, task.vipPriority);
+        auto asyncTask = std::make_shared<AsyncHotCacheTask>(
+            loop, nodeInfo->addr_, token, task.serverFilename);
+        asyncTask->start();
+
+        LOG_INFO << "Dispatch hot cache preload. file_id=" << task.fileId
+                 << ", node_id=" << task.nodeId
+                 << ", preload_bytes=" << task.preloadBytes
+                 << ", vip_priority=" << task.vipPriority
+                 << ", hot_score=" << task.hotScore;
     }
 }
 

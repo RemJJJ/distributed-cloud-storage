@@ -20,7 +20,7 @@
         "master_port": 8000,
         "local_host": "",
         "local_port": 9000,
-        "public_url": "http://126f9ad8.r24.cpolar.top"
+        "public_url": ""
     },
     "qos": {
     "enabled": true,
@@ -29,6 +29,23 @@
     "normal_upload_rate_kbps": 2048,
     "normal_download_rate_kbps": 5120,
     "token_bucket_capacity_kb": 1024
+    },
+    "hot_cache": {
+        "enabled": true,
+        "vip_access_score": 40,
+        "normal_access_score": 10,
+        "learning_bonus_score": 6,
+        "vip_trigger_score": 40,
+        "learning_trigger_score": 32,
+        "general_trigger_score": 50,
+        "vip_preload_mb": 12,
+        "learning_preload_mb": 6,
+        "general_preload_mb": 2,
+        "cooldown_seconds": 45,
+        "idle_expire_seconds": 300,
+        "max_tasks_per_round": 6,
+        "max_tasks_per_node": 2,
+        "dispatch_decay_percent": 60
     },
     "jwt-secret": "MySuperSecretKey_2026_DistributedSystem_DoNotShare!@#$%^&*"
 }

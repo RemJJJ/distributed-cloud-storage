@@ -1,5 +1,6 @@
 #include "FileHandler.h"
 #include "AsyncDeleteTask.h"
+#include "HotCacheService.h"
 #include "NodeManager.h"
 #include "SceneProfileService.h"
 #include "StorageFeatureService.h"
@@ -695,6 +696,9 @@ bool FileHandler::handleFileDownload(
         return true;
     }
     SceneProfileService::instance().incrementDownloadCount(*mysql, fileId);
+    // 每次下载记录一次
+    HotCacheService::instance().recordAccess(fileId, nodeId, serverFilename,
+                                             fileSize, serviceLevel, sceneTag);
     auto fileResponse = TokenManager::instance().generateDownloadToken(
         userId, original_filename, serverFilename, sceneTag,
         NodeManager::instance().buildQoSPolicy(serviceLevel, true));
