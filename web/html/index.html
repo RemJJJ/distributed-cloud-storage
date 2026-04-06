@@ -1510,7 +1510,7 @@
             xhr.setRequestHeader('Authorization', 'Bearer ' + uploadToken);
             xhr.setRequestHeader('X-File-Name', encodeURIComponent(file.name));
             xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
-            // 🌟 修复 2：自定义一个“连接超时”定时器
+            // 自定义连接超时定时器
             let connectionTimeout = setTimeout(() => {
                         xhr.abort(); // 强行终止请求
                         reject(new Error('连接存储节点超时 (5秒未响应)'));
@@ -1883,6 +1883,7 @@
             const ext = getFileExtension(originalName);
             code.className = ext ? `language-${ext}` : 'plaintext';
             code.textContent = content;
+            code.removeAttribute('data-highlighted');
             modal.style.display = 'block';
             if (window.hljs) {
                 window.hljs.highlightElement(code);
