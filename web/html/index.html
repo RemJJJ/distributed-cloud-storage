@@ -88,15 +88,25 @@
             background: linear-gradient(135deg, #0f172a, #1d4ed8);
             border-color: rgba(125, 211, 252, 0.35);
         }
-        .scene-learning-focus {
-            border-left: 5px solid #f59e0b;
-            background: linear-gradient(135deg, #fffef6, #fff7df);
+        .file-item.scene-learning-focus {
+            border-left: 6px solid #f59e0b;
+            border-color: rgba(245, 158, 11, 0.35);
+            background: linear-gradient(135deg, #fffdf2, #ffefb8);
+            box-shadow: 0 10px 24px rgba(245, 158, 11, 0.18);
+        }
+        .file-item.scene-learning-focus .file-name {
+            color: #b45309;
+        }
+        .file-item.scene-learning-focus .file-info,
+        .file-item.scene-learning-focus .file-info span {
+            color: #92400e;
         }
         body.scene-development {
             background: linear-gradient(180deg, #0f172a, #111827);
             color: #e5eefc;
         }
         body.scene-development .header-bar,
+        body.scene-development .storage-summary,
         body.scene-development .upload-form,
         body.scene-development .file-item,
         body.scene-development .login-form,
@@ -123,6 +133,78 @@
         body.scene-development .category-tag.active {
             background: #2563eb;
             color: white;
+        }
+        body.scene-development .empty-tip,
+        body.scene-development .file-info,
+        body.scene-development #storage-summary-text,
+        body.scene-development #storage-summary-subtext,
+        body.scene-development .breadcrumbs,
+        body.scene-development .share-options,
+        body.scene-development .share-type label,
+        body.scene-development .expire-time label,
+        body.scene-development .share-info-item .text {
+            color: #e5eefc;
+        }
+        body.scene-development .share-type,
+        body.scene-development .expire-time,
+        body.scene-development .share-info,
+        body.scene-development .user-list,
+        body.scene-development .share-info-item .content {
+            background: #0f172a;
+            color: #e5eefc;
+            border: 1px solid rgba(125, 211, 252, 0.16);
+        }
+        body.scene-development .share-dialog h3,
+        body.scene-development .share-info-item label,
+        body.scene-development .breadcrumb-link {
+            color: #7dd3fc;
+        }
+        body.scene-development .folder-item {
+            border-left-color: #22d3ee;
+            background: linear-gradient(135deg, rgba(8, 47, 73, 0.95), rgba(15, 118, 110, 0.38));
+        }
+        body.scene-development .folder-item .file-name,
+        body.scene-development .folder-item .file-info,
+        body.scene-development .folder-item .file-info span {
+            color: #ecfeff;
+        }
+        body.scene-development .folder-open-button {
+            background: #0891b2;
+            color: #f8fafc;
+        }
+        body.scene-development .folder-open-button:hover {
+            background: #0e7490;
+        }
+        body.scene-development .share-type label:hover,
+        body.scene-development .user-item:hover {
+            background: rgba(59, 130, 246, 0.16);
+        }
+        body.scene-development .user-item {
+            color: #e5eefc;
+            border-bottom-color: rgba(148, 163, 184, 0.16);
+        }
+        body.scene-development .user-search input,
+        body.scene-development .expire-time select,
+        body.scene-development .login-form input,
+        body.scene-development .search-bar input {
+            background: #0f172a !important;
+            color: #f8fafc !important;
+            border-color: rgba(125, 211, 252, 0.24) !important;
+        }
+        body.scene-development .user-search input::placeholder,
+        body.scene-development .login-form input::placeholder,
+        body.scene-development .search-bar input::placeholder {
+            color: #94a3b8;
+        }
+        body.scene-development .dialog-button.secondary,
+        body.scene-development .secondary-button {
+            background: #1e293b;
+            color: #e5eefc;
+            border: 1px solid rgba(125, 211, 252, 0.16);
+        }
+        body.scene-development .dialog-button.secondary:hover,
+        body.scene-development .secondary-button:hover {
+            background: #334155;
         }
         .file-header {
             display: flex;
@@ -645,12 +727,135 @@
             background-color: #2196F3;
             color: white;
         }
+        .user-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            margin-left: 12px;
+            padding: 6px 12px;
+            border-radius: 999px;
+            font-size: 12px;
+            font-weight: bold;
+            background: #eef2ff;
+            color: #1e3a8a;
+        }
+        .user-badge.vip {
+            background: linear-gradient(135deg, #fef3c7, #f59e0b);
+            color: #6b3f00;
+            box-shadow: 0 8px 20px rgba(245, 158, 11, 0.22);
+        }
+        .storage-summary {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 16px;
+            padding: 16px 18px;
+            margin: 16px 0;
+            border-radius: 12px;
+            background: white;
+            box-shadow: 0 8px 24px rgba(15, 23, 42, 0.08);
+        }
+        .storage-progress {
+            flex: 1;
+            height: 12px;
+            border-radius: 999px;
+            background: #e5e7eb;
+            overflow: hidden;
+        }
+        .storage-progress-fill {
+            height: 100%;
+            width: 0%;
+            background: linear-gradient(135deg, #22c55e, #16a34a);
+        }
+        .folder-toolbar, .pagination-bar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 16px;
+            flex-wrap: wrap;
+        }
+        .breadcrumbs {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-wrap: wrap;
+            color: #475569;
+        }
+        .breadcrumb-link {
+            cursor: pointer;
+            color: #2563eb;
+            font-weight: 600;
+        }
+        .folder-item {
+            border-left: 4px solid #14b8a6;
+            background: linear-gradient(135deg, #ecfeff, #ccfbf1);
+        }
+        .folder-open-button {
+            background: #0f766e;
+            color: white;
+        }
+        .folder-open-button:hover {
+            background: #115e59;
+        }
+        .secondary-button {
+            padding: 10px 14px;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            background: #e2e8f0;
+            color: #0f172a;
+            font-weight: 600;
+        }
+        .secondary-button:hover {
+            background: #cbd5e1;
+        }
+        .code-preview-modal {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: rgba(15, 23, 42, 0.72);
+            z-index: 1100;
+            padding: 24px;
+        }
+        .code-preview-dialog {
+            max-width: 960px;
+            margin: 0 auto;
+            background: #0f172a;
+            color: #e2e8f0;
+            border-radius: 16px;
+            overflow: hidden;
+            box-shadow: 0 24px 48px rgba(15, 23, 42, 0.4);
+        }
+        .code-preview-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 16px 20px;
+            border-bottom: 1px solid rgba(148, 163, 184, 0.2);
+        }
+        .code-preview-body {
+            max-height: 70vh;
+            overflow: auto;
+        }
+        .code-preview-body pre {
+            margin: 0;
+            padding: 20px;
+            background: transparent;
+        }
+        .empty-tip {
+            color: #94a3b8;
+            font-size: 14px;
+        }
     </style>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.4/css/all.min.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.10.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.10.0/highlight.min.js"></script>
 </head>
 <body>
     <div id="user-info" class="user-info hidden">
         欢迎，<span id="username-display"></span>
+        <span id="user-badge" class="user-badge">普通用户</span>
         <button onclick="logout()" class="logout-button">
             <i class="fas fa-sign-out-alt">退出登录</i>
         </button>
@@ -706,8 +911,27 @@
 
         <div id="scene-mode-banner" class="scene-mode-banner"></div>
 
+        <div id="storage-summary" class="storage-summary">
+            <div>
+                <div id="storage-summary-text">正在加载存储空间...</div>
+                <div class="empty-tip" id="storage-summary-subtext"></div>
+            </div>
+            <div class="storage-progress">
+                <div id="storage-progress-fill" class="storage-progress-fill"></div>
+            </div>
+        </div>
+
         <div class="upload-form">
-            <input type="file" id="file-input">
+            <div style="display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; margin-bottom: 12px;">
+                <input type="file" id="file-input" multiple>
+                <input type="file" id="directory-input" webkitdirectory multiple style="display: none;">
+                <button class="secondary-button" onclick="document.getElementById('directory-input').click()">
+                    <i class="fas fa-folder-plus"></i> 上传目录
+                </button>
+                <button class="secondary-button" onclick="createFolder()">
+                    <i class="fas fa-folder"></i> 新建目录
+                </button>
+            </div>
             <button class="upload-button" onclick="uploadFile()">
                 <i class="fas fa-cloud-upload-alt">上传文件</i>
             </button>
@@ -718,6 +942,10 @@
 
         <div id="my-files-section" style="display: block;">
             <h2 id="file-list-title">已上传文件列表</h2>
+            <div class="folder-toolbar">
+                <div id="folder-breadcrumbs" class="breadcrumbs"></div>
+                <div class="empty-tip" id="folder-hint"></div>
+            </div>
             
 
             <!-- 搜索框 -->
@@ -738,6 +966,11 @@
             </div>
 
             <div id="file-list"></div>
+            <div class="pagination-bar">
+                <button class="secondary-button" onclick="changePage(-1)">上一页</button>
+                <div id="pagination-info" class="empty-tip">第 1 页</div>
+                <button class="secondary-button" onclick="changePage(1)">下一页</button>
+            </div>
         
         </div>
         
@@ -844,6 +1077,18 @@
         </div>
     </div>
 
+    <div id="code-preview-modal" class="code-preview-modal">
+        <div class="code-preview-dialog">
+            <div class="code-preview-header">
+                <strong id="code-preview-title">代码预览</strong>
+                <button class="secondary-button" onclick="closeCodePreview()">关闭</button>
+            </div>
+            <div class="code-preview-body">
+                <pre><code id="code-preview-content" class="plaintext"></code></pre>
+            </div>
+        </div>
+    </div>
+
     <script>
     // 添加 AbortController 用于控制视频连接
     let videoAbortController = null;
@@ -852,10 +1097,15 @@
     let token = localStorage.getItem('token');
     let currentUser = localStorage.getItem('username');
     let currentSceneTag = localStorage.getItem('scene_tag') || 'general';
+    let currentServiceLevel = localStorage.getItem('service_level') || 'normal';
 
     let currentKeyword = '';
     let currentType = '';
     let currentTab = 'my-files'; // 记录当前所在的 Tab
+    let currentFolderId = 0;
+    let currentFoldersCache = [];
+    let currentPagination = { page: 1, limit: 20, total: 0, totalPages: 0 };
+    let currentStorage = { quotaBytes: 0, usedBytes: 0, remainingBytes: 0, isVip: false };
 
     let allFilesCache = [];
 
@@ -882,22 +1132,49 @@
         applySceneModeUI();
     }
 
+    function setServiceLevel(serviceLevel) {
+        currentServiceLevel = serviceLevel || 'normal';
+        localStorage.setItem('service_level', currentServiceLevel);
+        updateUserBadge();
+        applySceneModeUI();
+    }
+
     function clearSceneTag() {
         currentSceneTag = 'general';
         localStorage.removeItem('scene_tag');
+        localStorage.removeItem('service_level');
+        currentServiceLevel = 'normal';
         applySceneModeUI();
+    }
+
+    function updateUserBadge() {
+        const badge = document.getElementById('user-badge');
+        if (!badge) {
+            return;
+        }
+        const isVip = currentServiceLevel === 'vip';
+        badge.className = isVip ? 'user-badge vip' : 'user-badge';
+        badge.textContent = isVip ? 'VIP 用户' : '普通用户';
     }
 
     function applySceneModeUI() {
         const banner = document.getElementById('scene-mode-banner');
         document.body.classList.toggle('scene-development', currentSceneTag === 'development');
+        updateUserBadge();
 
         if (currentSceneTag === 'learning') {
             banner.className = 'scene-mode-banner learning';
-            banner.textContent = '📚 学习模式已开启：已为您加速视频与文档加载';
+            banner.textContent = currentServiceLevel === 'vip'
+                ? '尊敬的 VIP 用户，学习模式已开启：已为您启用更深度的视频与文档预取加速'
+                : '📚 学习模式已开启：已为您加速视频与文档加载';
         } else if (currentSceneTag === 'development') {
             banner.className = 'scene-mode-banner development';
-            banner.textContent = '💻 开发者模式已开启：已为您优化海量小文件检索';
+            banner.textContent = currentServiceLevel === 'vip'
+                ? '尊敬的 VIP 开发者，已为您启用高优先级代码检索与预读体验'
+                : '💻 开发者模式已开启：已为您优化海量小文件检索';
+        } else if (currentServiceLevel === 'vip') {
+            banner.className = 'scene-mode-banner learning';
+            banner.textContent = '尊敬的 VIP 用户，系统已为您保留高优先级预取资源池';
         } else {
             banner.className = 'scene-mode-banner';
             banner.textContent = '';
@@ -915,38 +1192,11 @@
     // 触发搜索
     function performSearch(){
         currentKeyword = document.getElementById('global-search-input').value.trim();
-           // 小数据：前端过滤
-        if (allFilesCache.length < 200) {
-            applyFrontendFilter();
-        } else {
-            // 大数据：走后端
-            loadFilesWithQuery();
-        }
+        loadFileList(1);
     }
 
     function loadFilesWithQuery() {
-        let url = "/files?";
-
-        if (currentKeyword) {
-            url += "keyword=" + encodeURIComponent(currentKeyword) + "&";
-        }
-
-        if (currentType) {
-            url += "type=" + currentType;
-        }
-
-        fetch(url, {
-            headers: {
-                "Authorization": "Bearer " + localStorage.getItem("token")
-            }
-        })
-        .then(res => res.json())
-        .then(data => {
-            if (data.sceneTag) {
-                setSceneTag(data.sceneTag);
-            }
-            renderFileList(data.files);
-        });
+        loadFileList(1);
     }
 
     // 触发分类过滤
@@ -959,7 +1209,7 @@
         });
         event.currentTarget.classList.add('active');
 
-        applyFrontendFilter();
+        loadFileList(1);
     }
 
     function downloadFile(filename, originalName) {
@@ -995,7 +1245,8 @@
             document.getElementById('main-content').classList.remove('hidden');
             document.getElementById('user-info').classList.remove('hidden');
             document.getElementById('username-display').textContent = currentUser;
-            loadFileList();
+            updateUserBadge();
+            loadFileList().catch(error => console.error(error));
             console.log("加载完上传文件列表");
             loadSharedWithMeList();
             console.log("加载完分享文件列表");
@@ -1052,6 +1303,7 @@
                 localStorage.setItem('token', token);
                 localStorage.setItem('username', username);
                 setSceneTag(data.sceneTag || 'general');
+                setServiceLevel(data.serviceLevel || 'normal');
                 checkLoginStatus();
             } else {
                 // 显示具体的错误信息
@@ -1133,224 +1385,347 @@
     });
 }
 
+    function updateStorageSummary(storage) {
+        currentStorage = storage || currentStorage;
+        const text = document.getElementById('storage-summary-text');
+        const subtext = document.getElementById('storage-summary-subtext');
+        const fill = document.getElementById('storage-progress-fill');
+        if (!text || !subtext || !fill) {
+            return;
+        }
+
+        const quota = currentStorage.quotaBytes || 0;
+        const used = currentStorage.usedBytes || 0;
+        const remaining = currentStorage.remainingBytes || 0;
+        const percent = quota > 0 ? Math.min(100, Math.round((used / quota) * 100)) : 0;
+        text.textContent = `已使用 ${formatSize(used)} / ${formatSize(quota)}`;
+        subtext.textContent = `剩余空间 ${formatSize(remaining)}${currentStorage.isVip ? '，VIP 专属大容量已生效' : ''}`;
+        fill.style.width = `${percent}%`;
+        fill.style.background = percent > 85
+            ? 'linear-gradient(135deg, #ef4444, #dc2626)'
+            : 'linear-gradient(135deg, #22c55e, #16a34a)';
+    }
+
+    function renderBreadcrumbs(breadcrumbs) {
+        const container = document.getElementById('folder-breadcrumbs');
+        const hint = document.getElementById('folder-hint');
+        if (!container || !hint) {
+            return;
+        }
+
+        container.innerHTML = '';
+        const root = document.createElement('span');
+        root.className = 'breadcrumb-link';
+        root.textContent = '全部文件';
+        root.onclick = () => openFolder(0);
+        container.appendChild(root);
+
+        (breadcrumbs || []).forEach(folder => {
+            const sep = document.createElement('span');
+            sep.textContent = '/';
+            container.appendChild(sep);
+
+            const item = document.createElement('span');
+            item.className = 'breadcrumb-link';
+            item.textContent = folder.name;
+            item.onclick = () => openFolder(folder.id);
+            container.appendChild(item);
+        });
+
+        hint.textContent = currentType
+            ? '当前按类型查看，目录层级已临时忽略'
+            : (currentFolderId ? '文件将上传到当前目录' : '当前位于根目录');
+    }
+
+    function changePage(delta) {
+        const nextPage = (currentPagination.page || 1) + delta;
+        if (nextPage < 1) {
+            return;
+        }
+        if (currentPagination.totalPages && nextPage > currentPagination.totalPages) {
+            return;
+        }
+        loadFileList(nextPage);
+    }
+
+    function openFolder(folderId) {
+        currentFolderId = folderId || 0;
+        loadFileList(1);
+    }
+
+    async function createFolder() {
+        if (!token) {
+            alert('请先登录');
+            return;
+        }
+        const name = prompt('请输入新目录名称');
+        if (!name) {
+            return;
+        }
+
+        const response = await fetch('/folders', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': 'Bearer ' + token
+            },
+            body: JSON.stringify({
+                name,
+                parent_id: currentType ? 0 : currentFolderId
+            })
+        });
+        const data = await response.json();
+        if (data.code === 0) {
+            showMessage('目录创建成功', 'success');
+            loadFileList();
+        } else {
+            showMessage(data.message || '目录创建失败', 'error');
+        }
+    }
+
+    async function requestUploadTicket(file, options = {}) {
+        const requestResponse = await fetch('/upload', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': 'Bearer ' + token
+            },
+            body: JSON.stringify({
+                original_filename: file.name,
+                file_size: file.size,
+                file_type: file.type || 'application/octet-stream',
+                md5: options.md5 || '',
+                folder_id: options.folderId || 0,
+                relative_path: options.relativePath || '',
+                preferred_node_id: options.preferredNodeId || ''
+            })
+        });
+        return requestResponse.json();
+    }
+
+    function uploadBinaryToDataNode(file, uploadUrl, uploadToken, progressCallback) {
+        return new Promise((resolve, reject) => {
+            const xhr = new XMLHttpRequest();
+            xhr.open('POST', uploadUrl, true);
+            xhr.setRequestHeader('Authorization', 'Bearer ' + uploadToken);
+            xhr.setRequestHeader('X-File-Name', encodeURIComponent(file.name));
+            xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
+            // 🌟 修复 2：自定义一个“连接超时”定时器
+            let connectionTimeout = setTimeout(() => {
+                        xhr.abort(); // 强行终止请求
+                        reject(new Error('连接存储节点超时 (5秒未响应)'));
+                    }, 5000);
+
+            xhr.upload.onprogress = function(e) {
+                if(connectionTimeout){
+                    clearTimeout(connectionTimeout);
+                    connectionTimeout = null;
+                }
+                if (e.lengthComputable && progressCallback) {
+                    progressCallback(e.loaded, e.total);
+                }
+            };
+            xhr.onload = function() {
+                // 确保定时器被清理
+                if (connectionTimeout) clearTimeout(connectionTimeout);
+                if (xhr.status === 200) {
+                    resolve(JSON.parse(xhr.responseText));
+                } else {
+                    try {
+                        const response = JSON.parse(xhr.responseText);
+                        reject(new Error(response.message || xhr.statusText));
+                    } catch (e) {
+                        reject(new Error('服务器返回异常状态 ' + xhr.status));
+                    }
+                }
+            };
+            xhr.onerror = function() {
+                reject(new Error('网络错误，无法连接到存储节点'));
+            };
+            xhr.ontimeout = function() {
+                reject(new Error('连接存储节点超时'));
+            };
+            xhr.send(file);
+        });
+    }
+
+    function collectUploadEntries() {
+        const fileInput = document.getElementById('file-input');
+        const directoryInput = document.getElementById('directory-input');
+        const entries = [];
+
+        Array.from(fileInput.files || []).forEach(file => {
+            entries.push({ file, relativePath: '' });
+        });
+        Array.from(directoryInput.files || []).forEach(file => {
+            entries.push({ file, relativePath: file.webkitRelativePath || '' });
+        });
+        return entries;
+    }
+
     async function uploadFile() {
-        const userToken = localStorage.getItem('token'); // 获取用户登录 Token
+        const userToken = localStorage.getItem('token');
         if (!userToken) {
             alert('请先登录');
             return;
         }
 
-        const fileInput = document.getElementById('file-input');
-        const file = fileInput.files[0];
-        if (!file) {
-            alert('请选择文件');
+        const entries = collectUploadEntries();
+        if (!entries.length) {
+            alert('请选择文件或目录');
             return;
         }
 
         const progress = document.querySelector('.progress');
         const progressBar = document.querySelector('.progress-bar');
         progress.style.display = 'block';
-        
+
+        let preferredNodeId = '';
+        let batchMode = false;
         try {
-            // 计算文件MD5
-            progressBar.textContent = '正在扫描文件 (计算MD5)...';
-            progressBar.style.width = '10%';
-            
-            const fileMd5 = await calculateMD5(file, (percent) => {
-                // 扫描进度 (只占前 10% 的进度条视觉效果)
-                progressBar.style.width = (percent * 0.1) + '%'; 
-            });
+            for (let index = 0; index < entries.length; index++) {
+                const { file, relativePath } = entries[index];
+                progressBar.style.width = '5%';
+                progressBar.textContent = `扫描 ${index + 1}/${entries.length}: ${file.name}`;
+                const md5 = await calculateMD5(file, percent => {
+                    progressBar.style.width = `${Math.max(5, percent * 0.1)}%`;
+                });
 
-            // ==========================================
-            // 第一阶段：向 Master 申请上传地址
-            // ==========================================
-            progressBar.textContent = '正在请求服务器...';
+                const requestData = await requestUploadTicket(file, {
+                    md5,
+                    folderId: currentType ? 0 : currentFolderId,
+                    relativePath,
+                    preferredNodeId
+                });
 
-            const requestResponse = await fetch('/upload', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': 'Bearer ' + userToken // 验证用户身份
-                },
-                body: JSON.stringify({
-                    original_filename: file.name,
-                    file_size: file.size,
-                    file_type: file.type || 'application/octet-stream',
-                    md5: fileMd5
-                })
-            });
-
-            const requestData = await requestResponse.json();
-
-            if(requestData.code ===1){
-                progressBar.style.width = '100%';
-                progressBar.textContent = '秒传成功！';
-                progressBar.style.backgroundColor = '#4CAF50';
-                alert('极速秒传成功！');
-
-                allFilesCache.unshift(requestData.file);
-                applyFrontendFilter();
-                setTimeout(() => { progress.style.display = 'none'; }, 1500);
-                return; // 直接结束，不需要走 DataNode 了！
-            }
-            
-            if (requestData.code !== 0) {
-                throw new Error(requestData.message || '获取上传地址失败');
-            }
-
-            // 拿到 Master 分配的 DataNode 地址和专属上传 Token
-            const uploadUrl = requestData.data.uploadUrl;
-            const uploadToken = requestData.data.uploadToken;
-
-            // ==========================================
-            // 第二阶段：向 DataNode 真正上传文件
-            // ==========================================
-            progressBar.textContent = '正在上传...';
-            
-            const xhr = new XMLHttpRequest();
-            xhr.open('POST', uploadUrl, true); // 注意：这里用的是 Master 返回的动态 URL！
-
-            xhr.timout = 5000;
-
-            xhr.ontimeout = function(){
-                console.error("连接存储节点超时！");
-                alert("存储节点暂时无响应，请稍后重试。");
-                progress.style.display = 'none';
-                progressBar.style.width = '0%';
-            };
-            
-            // ⚠️ 极其重要：这里带的是 Master 刚刚签发的专属 uploadToken，而不是用户的登录 Token！
-            xhr.setRequestHeader('Authorization', 'Bearer ' + uploadToken); 
-            // 如果你的 DataNode 还需要原文件名，可以保留这个头，否则可以删掉
-            xhr.setRequestHeader('X-File-Name', encodeURIComponent(file.name));
-            xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
-
-            // 监听上传进度
-            xhr.upload.onprogress = function(e) {
-                if (e.lengthComputable) {
-                    const percentComplete = 10 + Math.round((e.loaded / e.total) * 90);
-                    progressBar.style.width = percentComplete + '%';
-                    progressBar.textContent = percentComplete + '%';
+                if (requestData.code === 1) {
+                    batchMode = batchMode || false;
+                    progressBar.style.width = '100%';
+                    progressBar.textContent = `秒传完成 ${index + 1}/${entries.length}`;
+                    continue;
                 }
-            };
 
-            // 监听上传完成
-            xhr.onload = function() {
-                if (xhr.status === 200) {
-                    alert('上传成功');
-                    const response = JSON.parse(xhr.responseText);
-                    const newFile = response.file;
+                if (requestData.code !== 0) {
+                    throw new Error(requestData.message || '获取上传地址失败');
+                }
 
-                    allFilesCache.unshift(newFile);
-                    applyFrontendFilter();
+                const uploadUrl = requestData.data.uploadUrl;
+                const uploadToken = requestData.data.uploadToken;
+                batchMode = Boolean(requestData.data.batchMode);
+                if (batchMode && requestData.data.nodeId) {
+                    preferredNodeId = requestData.data.nodeId;
                 } else {
-                    try {
-                        const response = JSON.parse(xhr.responseText);
-                        alert('上传失败: ' + (response.message || xhr.statusText));
-                    } catch (e) {
-                        alert('上传失败: 服务器返回异常状态 ' + xhr.status);
-                    }
+                    preferredNodeId = '';
                 }
-                // 恢复 UI 状态
-                setTimeout(() => {
-                    progress.style.display = 'none';
-                    progressBar.style.width = '0%';
-                    progressBar.textContent = '';
-                    fileInput.value = '';  // 清空文件选择
-                }, 1000);
-            };
 
-            // 监听网络错误
-            xhr.onerror = function() {
-                alert('网络错误，无法连接到存储节点！');
-                progress.style.display = 'none';
-            };
+                progressBar.textContent = `上传 ${index + 1}/${entries.length}: ${file.name}`;
+                await uploadBinaryToDataNode(file, uploadUrl, uploadToken, (loaded, total) => {
+                    const percent = 10 + Math.round((loaded / total) * 90);
+                    progressBar.style.width = `${percent}%`;
+                    progressBar.textContent = `上传 ${index + 1}/${entries.length}: ${percent}%`;
+                });
+            }
 
-            xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
-            xhr.send(file); // 浏览器会自动将文件以纯二进制流形式发出
-
+            showMessage(batchMode ? '开发场景批量上传完成，已串行复用存储节点连接' : '上传成功', 'success');
+            document.getElementById('file-input').value = '';
+            document.getElementById('directory-input').value = '';
+            await loadFileList();
         } catch (error) {
             alert('操作失败: ' + error.message);
-            progress.style.display = 'none';
-            progressBar.style.width = '0%';
+        } finally {
+            setTimeout(() => {
+                progress.style.display = 'none';
+                progressBar.style.width = '0%';
+                progressBar.textContent = '';
+            }, 800);
         }
     }
 
-    function loadFileList() {
+    async function loadFileList(page = currentPagination.page || 1) {
         if(!token){
             return;
         }
-        let url = '/files?';
 
-        fetch(url, {
+        const params = new URLSearchParams();
+        params.set('page', page);
+        params.set('limit', currentPagination.limit || 20);
+        if (currentKeyword) {
+            params.set('keyword', currentKeyword);
+        }
+        if (currentType) {
+            params.set('type', currentType);
+        } else if (currentFolderId) {
+            params.set('folder_id', currentFolderId);
+        }
+
+        const response = await fetch(`/files?${params.toString()}`, {
             headers: {
                 'Authorization': 'Bearer ' + localStorage.getItem('token')
             }
-        })
-        .then(response => {
-            if (response.status === 401) {
-                localStorage.removeItem('token');
-                localStorage.removeItem('username');
-                token= null;
-                currentUser = null;
-                checkLoginStatus();
-                throw new Error('Token已过期, 请重新登录');
-            }
-            return response.json();
-        })
-        .then(data => {
-            if (data.sceneTag) {
-                setSceneTag(data.sceneTag);
-            }
-            allFilesCache = data.files || [];
-            applyFrontendFilter();
-        })
-        .catch(error => {
-            console.error('加载文件列表失败:', error);
         });
+
+        if (response.status === 401) {
+            localStorage.removeItem('token');
+            localStorage.removeItem('username');
+            token= null;
+            currentUser = null;
+            checkLoginStatus();
+            throw new Error('Token已过期, 请重新登录');
+        }
+
+        const data = await response.json();
+        if (data.sceneTag) {
+            setSceneTag(data.sceneTag);
+        }
+        if (data.serviceLevel) {
+            setServiceLevel(data.serviceLevel);
+        }
+        allFilesCache = data.files || [];
+        currentFoldersCache = data.folders || [];
+        currentPagination = data.pagination || currentPagination;
+        currentFolderId = data.currentFolderId || 0;
+        renderBreadcrumbs(data.breadcrumbs || []);
+        updateStorageSummary(data.storage || currentStorage);
+        renderFileList(sortFilesForCurrentScene(allFilesCache), currentFoldersCache);
     }
 
     function applyFrontendFilter(){
-        let filtered = allFilesCache
-        // 按 type 过滤
-        if (currentType) {
-            filtered = filtered.filter(file => {
-                const name = file.originalName.toLowerCase();
-
-                if (currentType === "image") {
-                    return name.endsWith(".jpg") || name.endsWith(".png") || name.endsWith(".gif");
-                }
-                if (currentType === "video") {
-                    return name.endsWith(".mp4") || name.endsWith(".avi") || name.endsWith(".mkv");
-                }
-                if (currentType === "document") {
-                    return name.endsWith(".pdf") || name.includes(".doc") || name.endsWith(".txt");
-                }
-                if (currentType === "code") {
-                    return name.endsWith(".cpp") || name.endsWith(".h") || name.endsWith(".py") || name.endsWith(".js");
-                }
-
-                return true;
-            });
-        }
-
-        // 按 keyword 过滤
-        if (currentKeyword) {
-            filtered = filtered.filter(file =>
-                file.originalName.toLowerCase().includes(currentKeyword.toLowerCase())
-            );
-        }
-
-        renderFileList(sortFilesForCurrentScene(filtered));
+        renderFileList(sortFilesForCurrentScene(allFilesCache), currentFoldersCache);
     }
 
-    function renderFileList(files) {
+    function renderFileList(files, folders = []) {
         const fileList = document.getElementById('file-list');
         fileList.innerHTML = '';
+        const pageInfo = document.getElementById('pagination-info');
+        if (pageInfo) {
+            pageInfo.textContent = `第 ${currentPagination.page || 1} / ${Math.max(currentPagination.totalPages || 1, 1)} 页，共 ${currentPagination.total || 0} 个文件`;
+        }
 
-        if (!files || files.length === 0) {
+        if ((!files || files.length === 0) && (!folders || folders.length === 0)) {
             fileList.innerHTML = "<p style='color:#999;'>暂无文件</p>";
             return;
+        }
+
+        if (!currentType) {
+            folders.forEach(folder => {
+                const div = document.createElement('div');
+                div.className = 'file-item folder-item';
+                div.innerHTML = `
+                    <div class="file-header">
+                        <span class="file-name"><i class="fas fa-folder-open"></i> ${folder.name}</span>
+                        <div class="file-actions">
+                            <button class="action-button folder-open-button" onclick="openFolder(${folder.id})">
+                                <i class="fas fa-arrow-right"></i> 打开
+                            </button>
+                        </div>
+                    </div>
+                    <div class="file-info">
+                        <span>目录路径: ${folder.fullPath || folder.name}</span>
+                        <span>创建时间: ${folder.createdAt || getCurrentTime()}</span>
+                    </div>
+                `;
+                fileList.appendChild(div);
+            });
         }
 
         files.forEach(file => {
@@ -1378,6 +1753,8 @@
             const ext = file.originalName.split('.').pop().toLowerCase();
             const isVideo = ext === 'mp4';
             const isImage = ['jpg','jpeg','png','gif','webp'].includes(ext);
+            const isCodePreview = currentSceneTag === 'development' &&
+                ['cpp','cc','c','h','hpp','py','js','json','ts','tsx','java','go','rs','txt','md'].includes(ext);
 
             // ===== 下载 =====
             const downloadButton = document.createElement('button');
@@ -1395,6 +1772,13 @@
                     isVideo ? playVideo(file.name) : previewImage(file.name);
                 };
                 actionsDiv.appendChild(previewButton);
+            }
+            if (isCodePreview) {
+                const previewCodeButton = document.createElement('button');
+                previewCodeButton.className = 'action-button preview-button';
+                previewCodeButton.innerHTML = '<i class="fas fa-code"></i> 预览';
+                previewCodeButton.onclick = () => previewCodeFile(file.name, file.originalName);
+                actionsDiv.appendChild(previewCodeButton);
             }
 
             // ===== 分享 =====
@@ -1439,6 +1823,7 @@
             infoDiv.innerHTML = `
                 <span>大小: ${formatSize(file.size)}</span>
                 <span>上传时间: ${file.createdAt ? file.createdAt : getCurrentTime()}</span>
+                <span>目录: ${file.relativePath || '根目录'}</span>
             `;
 
             // ===== 分享信息 =====
@@ -1465,6 +1850,50 @@
 
             fileList.appendChild(div);
         });
+    }
+
+    async function previewCodeFile(filename, originalName) {
+        if (!token) {
+            alert('请先登录');
+            return;
+        }
+
+        try {
+            const res = await fetch(`/download/${encodeURIComponent(filename)}`, {
+                headers: { 'Authorization': 'Bearer ' + token }
+            });
+            const result = await res.json();
+            if (result.code !== 0) {
+                throw new Error(result.message);
+            }
+
+            const previewUrl = `${result.data.previewUrl}?token=${result.data.token}`;
+            const textRes = await fetch(previewUrl);
+            if (!textRes.ok) {
+                const errText = await textRes.text();
+                throw new Error(errText || '预览失败');
+            }
+
+            const content = await textRes.text();
+            const modal = document.getElementById('code-preview-modal');
+            const title = document.getElementById('code-preview-title');
+            const code = document.getElementById('code-preview-content');
+            title.textContent = `代码预览: ${originalName}`;
+
+            const ext = getFileExtension(originalName);
+            code.className = ext ? `language-${ext}` : 'plaintext';
+            code.textContent = content;
+            modal.style.display = 'block';
+            if (window.hljs) {
+                window.hljs.highlightElement(code);
+            }
+        } catch (error) {
+            showMessage(`预览失败: ${error.message}`, 'error');
+        }
+    }
+
+    function closeCodePreview() {
+        document.getElementById('code-preview-modal').style.display = 'none';
     }
 
     function getCurrentTime(){

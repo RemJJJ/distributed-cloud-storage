@@ -91,6 +91,7 @@ class FileDownContext {
     FileDownContext(const std::string &filepath,
                     const std::string &originalFilename,
                     const std::string &sceneTag,
+                    const std::string &serviceLevel,
                     std::shared_ptr<TokenBucketRateLimiter> rateLimiter,
                     std::shared_ptr<PrefetchCache> prefetchCache,
                     ThreadPool *ioThreadPool);
@@ -120,12 +121,17 @@ class FileDownContext {
 
   private:
     bool shouldUsePrefetchCache() const;
+    bool isVipUser() const;
+    bool isLearningUser() const;
+    uintmax_t getPrefetchWindowBytes() const;
+    uintmax_t getPrefetchLowWaterBytes() const;
     std::string buildCacheKey(uintmax_t offset) const;
-    void schedulePrefetchWindow(uintmax_t nextOffset) const;
+    void schedulePrefetchWindow(uintmax_t nextOffset);
 
     std::string filepath_;         // 文件路径
     std::string originalFilename_; // 原始文件名
     std::string sceneTag_;
+    std::string serviceLevel_;
     int fd_ = -1;
     std::shared_ptr<TokenBucketRateLimiter> rateLimiter_;
     std::shared_ptr<PrefetchCache> prefetchCache_;
@@ -177,9 +183,14 @@ class DataNodeHttpHandler : public BaseHandler {
     bool handleFileDownload(const TcpConnectionPtr &conn, HttpRequest &req,
                             std::shared_ptr<HttpResponse> &resp);
 
+    bool handleTextPreview(const TcpConnectionPtr &conn, HttpRequest &req,
+                           std::shared_ptr<HttpResponse> &resp);
+
     /// @brief 处理文件删除
     bool handleDeleteFile(const TcpConnectionPtr &conn, HttpRequest &req,
                           std::shared_ptr<HttpResponse> &resp);
+
+    bool isPreviewableTextFile(const std::string &filename) const;
 
     std::string getMimeType(const std::string &filename);
 };

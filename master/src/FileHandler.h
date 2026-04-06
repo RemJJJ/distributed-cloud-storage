@@ -12,6 +12,8 @@
 
 class FileHandler : public handlerUtils {
   public:
+    FileHandler();
+
     bool handleFileUpload(const fileserver::net::TcpConnectionPtr &conn,
                           fileserver::net::HttpRequest &req,
                           std::shared_ptr<fileserver::net::HttpResponse> &resp);
@@ -43,6 +45,15 @@ class FileHandler : public handlerUtils {
     bool handleHardDelete(const fileserver::net::TcpConnectionPtr &conn,
                           fileserver::net::HttpRequest &req,
                           std::shared_ptr<fileserver::net::HttpResponse> &resp);
+
+    bool handleCreateFolder(
+        const fileserver::net::TcpConnectionPtr &conn,
+        fileserver::net::HttpRequest &req,
+        std::shared_ptr<fileserver::net::HttpResponse> &resp);
+
+    bool handleListFolders(const fileserver::net::TcpConnectionPtr &conn,
+                           fileserver::net::HttpRequest &req,
+                           std::shared_ptr<fileserver::net::HttpResponse> &resp);
 
   private:
     std::string generateUniqueFilename(const std::string &prefix);

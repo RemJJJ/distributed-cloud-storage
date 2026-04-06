@@ -60,7 +60,8 @@ TokenManager::generateUserToken(int userId, const std::string &username,
 TokenManager::fileUploadResponse TokenManager::generateUploadToken(
     int userId, uint64_t file_id, const std::string &node_id,
     const std::string &original_filename, const std::string &server_filename,
-    const std::string &created_time, const QoSPolicy &qos_policy) {
+    const std::string &created_time, const std::string &scene_tag,
+    bool batch_mode, const QoSPolicy &qos_policy) {
     std::string token;
     auto now = std::chrono::system_clock::now();
     try {
@@ -79,6 +80,10 @@ TokenManager::fileUploadResponse TokenManager::generateUploadToken(
                     .set_payload_claim("server_filename",
                                        jwt::claim(server_filename))
                     .set_payload_claim("created_time", jwt::claim(created_time))
+                    .set_payload_claim("scene_tag", jwt::claim(scene_tag))
+                    .set_payload_claim("batch_mode",
+                                       jwt::claim(std::string(batch_mode ? "1"
+                                                                         : "0")))
                     .set_payload_claim("service_level",
                                        jwt::claim(qos_policy.service_level))
                     .set_payload_claim("qos_mode",
@@ -281,6 +286,10 @@ bool TokenManager::verifyUploadToken(const std::string &token,
         out_payload.server_filename =
             result.payload.value("server_filename", "");
         out_payload.created_time = result.payload.value("created_time", "");
+        out_payload.scene_tag = result.payload.value("scene_tag", "general");
+        const std::string batchMode =
+            result.payload.value("batch_mode", std::string("0"));
+        out_payload.batch_mode = batchMode == "1" || batchMode == "true";
         out_payload.qos_policy = parseQoSPolicy(result.payload);
 
         if (out_payload.file_id == 0 || out_payload.server_filename.empty() ||

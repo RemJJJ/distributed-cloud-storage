@@ -2,19 +2,19 @@
 #include "AsyncDeleteTask.h"
 #include "NodeManager.h"
 #include "SceneProfileService.h"
+#include "StorageFeatureService.h"
 #include "TokenManager.h"
 #include "db/MySQLPool.h"
 #include "db/MySQLStatement.h"
 #include "net/HttpResponse.h"
 #include "random"
+#include <algorithm>
 #include <chrono>
+#include <sstream>
 #include <string>
+#include <vector>
 
 namespace {
-std::string normalizeServiceLevel(const std::string &serviceLevel) {
-    return serviceLevel == "vip" ? "vip" : "normal";
-}
-
 std::string buildNodeAccessBaseUrl(const std::shared_ptr<DataNodeInfo> &node) {
     if (node && !node->publicUrl_.empty()) {
         return node->publicUrl_;
@@ -22,24 +22,82 @@ std::string buildNodeAccessBaseUrl(const std::shared_ptr<DataNodeInfo> &node) {
     return "http://" + node->addr_.toIpPort();
 }
 
-std::string fetchUserServiceLevel(db::MySQLPool::ConnectionGuard &mysql,
-                                  int userId) {
-    std::string sql = "SELECT service_level FROM users WHERE id = ? LIMIT 1";
-    db::MySQLStatement stmt(mysql, sql);
-    stmt.bindInt(userId);
-    if (!stmt.execute()) {
-        LOG_WARN << "Failed to query user service_level for user " << userId
-                 << ": " << stmt.getError();
-        return "normal";
+int parsePositiveInt(const std::string &value, int defaultValue) {
+    if (value.empty()) {
+        return defaultValue;
+    }
+    try {
+        return std::max(0, std::stoi(value));
+    } catch (...) {
+        return defaultValue;
+    }
+}
+
+std::string toLikePattern(const std::string &keyword) {
+    return "%" + keyword + "%";
+}
+
+std::string buildFileTypeFilterSql(const std::string &fileType) {
+    if (fileType == "image") {
+        return " AND (LOWER(f.original_filename) LIKE '%.jpg' OR "
+               "LOWER(f.original_filename) LIKE '%.jpeg' OR "
+               "LOWER(f.original_filename) LIKE '%.png' OR "
+               "LOWER(f.original_filename) LIKE '%.gif' OR "
+               "LOWER(f.original_filename) LIKE '%.webp')";
+    }
+    if (fileType == "video") {
+        return " AND (LOWER(f.original_filename) LIKE '%.mp4' OR "
+               "LOWER(f.original_filename) LIKE '%.avi' OR "
+               "LOWER(f.original_filename) LIKE '%.mkv' OR "
+               "LOWER(f.original_filename) LIKE '%.mov')";
+    }
+    if (fileType == "document") {
+        return " AND (LOWER(f.original_filename) LIKE '%.pdf' OR "
+               "LOWER(f.original_filename) LIKE '%.doc%' OR "
+               "LOWER(f.original_filename) LIKE '%.txt' OR "
+               "LOWER(f.original_filename) LIKE '%.ppt%')";
+    }
+    if (fileType == "code") {
+        return " AND (LOWER(f.original_filename) LIKE '%.cpp' OR "
+               "LOWER(f.original_filename) LIKE '%.cc' OR "
+               "LOWER(f.original_filename) LIKE '%.c' OR "
+               "LOWER(f.original_filename) LIKE '%.h' OR "
+               "LOWER(f.original_filename) LIKE '%.hpp' OR "
+               "LOWER(f.original_filename) LIKE '%.py' OR "
+               "LOWER(f.original_filename) LIKE '%.js' OR "
+               "LOWER(f.original_filename) LIKE '%.json' OR "
+               "LOWER(f.original_filename) LIKE '%.ts')";
+    }
+    return "";
+}
+
+std::vector<std::string>
+splitRelativeParentSegments(const std::string &relativePath) {
+    std::string normalized = relativePath;
+    std::replace(normalized.begin(), normalized.end(), '\\', '/');
+
+    const auto pos = normalized.find_last_of('/');
+    if (pos == std::string::npos) {
+        return {};
     }
 
-    auto rs = stmt.getResultSet();
-    if (!rs || !rs->next()) {
-        return "normal";
+    std::string folderPath = normalized.substr(0, pos);
+    std::vector<std::string> segments;
+    std::stringstream ss(folderPath);
+    std::string segment;
+    while (std::getline(ss, segment, '/')) {
+        if (!segment.empty()) {
+            segments.push_back(segment);
+        }
     }
-    return normalizeServiceLevel(rs->getString(0));
+    return segments;
 }
 } // namespace
+
+FileHandler::FileHandler() {
+    StorageFeatureService::instance().ensureSchema();
+    SceneProfileService::instance().ensureSchema();
+}
 
 bool FileHandler::handleListFiles(
     const fileserver::net::TcpConnectionPtr &conn,
@@ -62,13 +120,18 @@ bool FileHandler::handleListFiles(
         return true;
     }
 
-    // （可扩展）分页
-    int limit = 50;
-    int offset = 0;
-    if (!req.getQuery("limit").empty())
-        limit = std::stoi(req.getQuery("limit"));
-    if (!req.getQuery("offset").empty())
-        offset = std::stoi(req.getQuery("offset"));
+    const int limit =
+        std::max(1, std::min(100, parsePositiveInt(req.getQuery("limit"), 20)));
+    int page = std::max(1, parsePositiveInt(req.getQuery("page"), 1));
+    int offset = parsePositiveInt(req.getQuery("offset"), -1);
+    if (offset < 0) {
+        offset = (page - 1) * limit;
+    } else {
+        page = offset / limit + 1;
+    }
+    const int folderId = parsePositiveInt(req.getQuery("folder_id"), 0);
+    const std::string fileType = req.getQuery("type");
+    const std::string keyword = urlDecode(req.getQuery("keyword"));
 
     // 获取数据库连接
     auto mysql = db::MySQLPool::instance().getConnection();
@@ -77,37 +140,89 @@ bool FileHandler::handleListFiles(
                   fn::HttpResponse::k500InternalServerError, conn);
         return true;
     }
+    auto &storageService = StorageFeatureService::instance();
     std::string sceneTag =
         SceneProfileService::instance().getUserSceneTag(*mysql, userId);
+    auto storageSummary = storageService.getStorageSummary(*mysql, userId);
 
-    // 动态构建SQL语句
-    std::string sql =
-        "SELECT "
-        "f.id, f.filename, f.original_filename, f.file_size, f.created_at, "
+    if (folderId > 0 &&
+        !storageService.folderExists(*mysql, userId, folderId) &&
+        fileType.empty()) {
+        sendError(resp, "目录不存在", fn::HttpResponse::k404NotFound, conn);
+        return true;
+    }
+
+    std::vector<StorageFeatureService::FolderInfo> folders;
+    if (fileType.empty()) {
+        folders = storageService.listFolders(*mysql, userId, folderId);
+    }
+
+    std::string countSql =
+        "SELECT COUNT(*) "
+        "FROM files f "
+        "WHERE f.user_id = ? AND f.is_deleted = 0 AND f.status = 'success'";
+    std::string dataSql =
+        "SELECT f.id, f.filename, f.original_filename, f.file_size, "
+        "f.created_at, COALESCE(f.folder_id, 0), f.relative_path, "
         "s.share_type, s.target_user_id, s.share_id, s.expire_time, "
-        "s.extract_code, "
-        "u.username "
+        "s.extract_code, u.username "
         "FROM files f "
         "LEFT JOIN file_shares s ON f.id = s.file_id "
         "LEFT JOIN users u ON s.target_user_id = u.id "
-        "WHERE f.user_id = ? "
-        "AND f.is_deleted = 0 "
-        "AND f.status = 'success'";
+        "WHERE f.user_id = ? AND f.is_deleted = 0 AND f.status = 'success'";
 
-    sql += " ORDER BY f.created_at DESC LIMIT ? OFFSET ?";
+    const bool ignoreFolderByType = !fileType.empty();
+    if (!keyword.empty()) {
+        countSql += " AND f.original_filename LIKE ?";
+        dataSql += " AND f.original_filename LIKE ?";
+    }
+    if (!ignoreFolderByType) {
+        if (folderId > 0) {
+            countSql += " AND f.folder_id = ?";
+            dataSql += " AND f.folder_id = ?";
+        } else {
+            countSql += " AND f.folder_id IS NULL";
+            dataSql += " AND f.folder_id IS NULL";
+        }
+    }
+    countSql += buildFileTypeFilterSql(fileType);
+    dataSql += buildFileTypeFilterSql(fileType);
+    dataSql += " ORDER BY f.created_at DESC LIMIT ? OFFSET ?";
 
-    LOG_INFO << "Executing file list query for user: " << userId;
+    db::MySQLStatement countStmt(*mysql, countSql);
+    countStmt.bindInt(userId);
+    if (!keyword.empty()) {
+        countStmt.bindString(toLikePattern(keyword));
+    }
+    if (!ignoreFolderByType && folderId > 0) {
+        countStmt.bindInt(folderId);
+    }
+    if (!countStmt.execute()) {
+        LOG_ERROR << "Count query failed: " << countStmt.getError();
+        sendError(resp, "查询失败", fn::HttpResponse::k500InternalServerError,
+                  conn);
+        return true;
+    }
 
-    // 执行查询
-    LOG_DEBUG << sql;
-    db::MySQLStatement stmt(*mysql, sql);
+    int totalFiles = 0;
+    auto countRs = countStmt.getResultSet();
+    if (countRs && countRs->next()) {
+        totalFiles = countRs->getInt(0);
+    }
+
+    db::MySQLStatement stmt(*mysql, dataSql);
     if (stmt.hasError()) {
         sendError(resp, "数据库错误", fn::HttpResponse::k500InternalServerError,
                   conn);
         return true;
     }
-
     stmt.bindInt(userId);
+    if (!keyword.empty()) {
+        stmt.bindString(toLikePattern(keyword));
+    }
+    if (!ignoreFolderByType && folderId > 0) {
+        stmt.bindInt(folderId);
+    }
     stmt.bindInt(limit);
     stmt.bindInt(offset);
 
@@ -119,6 +234,15 @@ bool FileHandler::handleListFiles(
     }
     auto rs = stmt.getResultSet();
     json files = json::array();
+    json folderJson = json::array();
+
+    for (const auto &folder : folders) {
+        folderJson.push_back({{"id", folder.id},
+                              {"parentId", folder.parentId},
+                              {"name", folder.name},
+                              {"fullPath", folder.fullPath},
+                              {"createdAt", folder.createdAt}});
+    }
 
     // 遍历文件列表结果
     // 只适用于一个文件一个分享
@@ -130,30 +254,32 @@ bool FileHandler::handleListFiles(
         fileInfo["originalName"] = rs->getString(2);
         fileInfo["size"] = rs->getInt64(3);
         fileInfo["createdAt"] = rs->getString(4);
+        fileInfo["folderId"] = rs->getInt(5);
+        fileInfo["relativePath"] = rs->getString(6);
 
-        if (!rs->isNull(5)) {
+        if (!rs->isNull(7)) {
             json shareInfo;
-            std::string shareType = rs->getString(5);
+            std::string shareType = rs->getString(7);
             shareInfo["type"] = shareType;
-            if (!rs->isNull(7)) {
-                shareInfo["shareCode"] = rs->getString(7);
+            if (!rs->isNull(9)) {
+                shareInfo["shareCode"] = rs->getString(9);
             }
 
-            if (shareType == "protected" && !rs->isNull(9)) {
-                shareInfo["extractCode"] = rs->getString(9);
+            if (shareType == "protected" && !rs->isNull(11)) {
+                shareInfo["extractCode"] = rs->getString(11);
             }
 
-            if (shareInfo == "specific") {
-                if (!rs->isNull(6)) {
-                    shareInfo["sharedWithId"] = rs->getInt(6);
+            if (shareType == "specific") {
+                if (!rs->isNull(8)) {
+                    shareInfo["sharedWithId"] = rs->getInt(8);
                 }
-                if (!rs->isNull(10)) {
-                    shareInfo["sharedWithUsername"] = rs->getString(10);
+                if (!rs->isNull(12)) {
+                    shareInfo["sharedWithUsername"] = rs->getString(12);
                 }
             }
 
-            if (!rs->isNull(8)) {
-                shareInfo["expireTime"] = rs->getString(8);
+            if (!rs->isNull(10)) {
+                shareInfo["expireTime"] = rs->getString(10);
             }
 
             fileInfo["shareInfo"] = shareInfo;
@@ -167,7 +293,27 @@ bool FileHandler::handleListFiles(
     response["code"] = 0;
     response["message"] = "Success";
     response["files"] = files;
+    response["folders"] = folderJson;
     response["sceneTag"] = sceneTag;
+    response["serviceLevel"] = storageSummary.serviceLevel;
+    response["storage"] = {{"quotaBytes", storageSummary.quotaBytes},
+                           {"usedBytes", storageSummary.usedBytes},
+                           {"remainingBytes", storageSummary.remainingBytes},
+                           {"isVip", storageSummary.isVip}};
+    response["pagination"] = {
+        {"page", page},
+        {"limit", limit},
+        {"offset", offset},
+        {"total", totalFiles},
+        {"totalPages", limit > 0 ? (totalFiles + limit - 1) / limit : 0}};
+    response["currentFolderId"] = folderId;
+    response["breadcrumbs"] = json::array();
+    for (const auto &folder :
+         storageService.getFolderBreadcrumbs(*mysql, userId, folderId)) {
+        response["breadcrumbs"].push_back({{"id", folder.id},
+                                           {"name", folder.name},
+                                           {"fullPath", folder.fullPath}});
+    }
 
     resp->setStatusCode(fileserver::net::HttpResponse::k200Ok);
     resp->setStatusMessage("OK");
@@ -212,6 +358,10 @@ bool FileHandler::handleFileUpload(
         std::string originalFilename =
             requestData.value("original_filename", "");
         uintmax_t fileSize = requestData.value("file_size", 0);
+        const int requestedFolderId = requestData.value("folder_id", 0);
+        const std::string relativePath = requestData.value("relative_path", "");
+        const std::string preferredNodeId =
+            requestData.value("preferred_node_id", "");
         std::string fileType = getFileType(originalFilename);
 
         std::string serverFilename = generateUniqueFilename("upload");
@@ -232,7 +382,38 @@ bool FileHandler::handleFileUpload(
                       fn::HttpResponse::k500InternalServerError, conn);
             return true;
         }
-        std::string serviceLevel = fetchUserServiceLevel(*mysql, userId);
+
+        auto &storageService = StorageFeatureService::instance();
+        if (requestedFolderId > 0 &&
+            !storageService.folderExists(*mysql, userId, requestedFolderId)) {
+            sendError(resp, "目标目录不存在", fn::HttpResponse::k404NotFound,
+                      conn);
+            return true;
+        }
+
+        StorageFeatureService::StorageSummary storageSummary;
+        if (!storageService.canUploadFile(*mysql, userId, fileSize,
+                                          &storageSummary)) {
+            sendError(resp, "存储空间不足，当前账号配额已接近上限",
+                      fn::HttpResponse::k400BadRequest, conn);
+            return true;
+        }
+
+        const std::string serviceLevel = storageSummary.serviceLevel;
+        const std::string sceneTag =
+            SceneProfileService::instance().getUserSceneTag(*mysql, userId);
+        const bool batchMode = sceneTag == "development";
+
+        int finalFolderId = storageService.ensureFolderPath(
+            *mysql, userId, requestedFolderId,
+            splitRelativeParentSegments(relativePath));
+        if (!relativePath.empty() && finalFolderId == 0 &&
+            requestedFolderId == 0 &&
+            !splitRelativeParentSegments(relativePath).empty()) {
+            sendError(resp, "创建目录失败",
+                      fn::HttpResponse::k500InternalServerError, conn);
+            return true;
+        }
 
         // MD5 秒传逻辑
         if (!fileMd5.empty()) {
@@ -261,8 +442,9 @@ bool FileHandler::handleFileUpload(
                     std::string fastInsertSql =
                         "INSERT INTO files (filename, original_filename, "
                         "file_size, file_type, user_id, node_id, status, "
-                        "file_md5, created_at, updated_at) "
-                        "VALUES (?, ?, ?, ?, ?, ?, 'success', ?, ?, "
+                        "file_md5, folder_id, relative_path, created_at, "
+                        "updated_at) "
+                        "VALUES (?, ?, ?, ?, ?, ?, 'success', ?, ?, ?, ?, "
                         "?)";
                     db::MySQLStatement fastStmt(*mysql, fastInsertSql);
 
@@ -274,19 +456,33 @@ bool FileHandler::handleFileUpload(
                     fastStmt.bindInt(userId);
                     fastStmt.bindString(existNodeId);
                     fastStmt.bindString(fileMd5);
+                    if (finalFolderId > 0) {
+                        fastStmt.bindInt(finalFolderId);
+                    } else {
+                        fastStmt.bindNull();
+                    }
+                    fastStmt.bindString(relativePath);
                     fastStmt.bindString(currentTime); // 对应 created_at
                     fastStmt.bindString(currentTime); // 对应 updated_at
                     if (fastStmt.execute()) {
                         // 返回特殊的 code (比如
                         // 1)，告诉前端秒传成功，不需要再传给 DataNode 了
-                        json response = {{"code", 1},
-                                         {"message", "秒传成功"},
-                                         {"file",
-                                          {"id", fastStmt.insertId()},
-                                          {"name", existServerFilename},
-                                          {"originalName", originalFilename},
-                                          {"size", fileSize},
-                                          {"createdAt", currentTime}}};
+                        json response = {
+                            {"code", 1},
+                            {"message", "秒传成功"},
+                            {"file",
+                             {{"id", fastStmt.insertId()},
+                              {"name", existServerFilename},
+                              {"originalName", originalFilename},
+                              {"size", fileSize},
+                              {"createdAt", currentTime},
+                              {"folderId", finalFolderId},
+                              {"relativePath", relativePath}}},
+                            {"storage",
+                             {{"quotaBytes", storageSummary.quotaBytes},
+                              {"usedBytes", storageSummary.usedBytes},
+                              {"remainingBytes",
+                               storageSummary.remainingBytes}}}};
                         std::string bodyStr = response.dump();
                         resp->setStatusCode(fn::HttpResponse::k200Ok);
                         resp->setContentType("application/json");
@@ -299,8 +495,23 @@ bool FileHandler::handleFileUpload(
             }
         }
 
-        // 从 NodeManager 获取一个存活的 DataNode
-        auto dataNode = NodeManager::instance().getAliveNode(fileSize);
+        // 批量开发上传优先复用同一个 DataNode，便于浏览器 Keep-Alive 串行发送。
+        std::shared_ptr<DataNodeInfo> dataNode;
+        if (!preferredNodeId.empty()) {
+            auto preferredNode =
+                NodeManager::instance().getNodeInfo(preferredNodeId);
+            if (preferredNode && preferredNode->isAlive_) {
+                const uint64_t requiredMb =
+                    (fileSize + 1024 * 1024 - 1) / (1024 * 1024);
+                if (preferredNode->diskFreeMb_ == 0 ||
+                    preferredNode->diskFreeMb_ >= requiredMb) {
+                    dataNode = preferredNode;
+                }
+            }
+        }
+        if (!dataNode) {
+            dataNode = NodeManager::instance().getAliveNode(fileSize);
+        }
         if (!dataNode) {
             LOG_ERROR << "没有可用的 DataNode 节点";
             sendError(resp, "系统繁忙，当前无可用存储节点",
@@ -312,9 +523,9 @@ bool FileHandler::handleFileUpload(
         auto currentTime = getCurrentTimeStr();
         std::string insertSql =
             "INSERT INTO files (filename, original_filename, file_size, "
-            "file_type, user_id, node_id, status, file_md5, created_at, "
-            "updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, 'uploading', ?, ?, ?)";
+            "file_type, user_id, node_id, status, file_md5, folder_id, "
+            "relative_path, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, 'uploading', ?, ?, ?, ?, ?)";
         db::MySQLStatement stmt(*mysql, insertSql);
 
         stmt.bindString(serverFilename);
@@ -324,6 +535,12 @@ bool FileHandler::handleFileUpload(
         stmt.bindInt(userId);
         stmt.bindString(dataNode->id_);
         stmt.bindString(fileMd5);
+        if (finalFolderId > 0) {
+            stmt.bindInt(finalFolderId);
+        } else {
+            stmt.bindNull();
+        }
+        stmt.bindString(relativePath);
         stmt.bindString(currentTime);
         stmt.bindString(currentTime);
 
@@ -340,30 +557,33 @@ bool FileHandler::handleFileUpload(
         // 生成专属token
         auto fileUploadResponse = TokenManager::instance().generateUploadToken(
             userId, fileId, dataNode->id_, originalFilename, serverFilename,
-            currentTime,
+            currentTime, sceneTag, batchMode,
             NodeManager::instance().buildQoSPolicy(serviceLevel, false));
 
-        //  组装响应，告诉客户端去哪里上传
-        json response = {
-            {"code", 0},
-            {"message", "获取上传地址成功"},
-            {"data",
-             {{"fileId", fileId},
-              {"uploadUrl",
-               buildNodeAccessBaseUrl(dataNode) + "/api/datanode/upload"},
-              {"uploadToken", fileUploadResponse.token}}}};
+        // 组装响应，告诉客户端去哪里上传
+        json response = {{"code", 0},
+                         {"message", "获取上传地址成功"},
+                         {"data",
+                          {{"fileId", fileId},
+                           {"nodeId", dataNode->id_},
+                           {"batchMode", batchMode},
+                           {"serviceLevel", serviceLevel},
+                           {"sceneTag", sceneTag},
+                           {"folderId", finalFolderId},
+                           {"uploadUrl", buildNodeAccessBaseUrl(dataNode) +
+                                             "/api/datanode/upload"},
+                           {"uploadToken", fileUploadResponse.token}}}};
 
         std::string bodyStr = response.dump();
         resp->setStatusCode(fn::HttpResponse::k200Ok);
         resp->setContentType("application/json");
         resp->setBody(bodyStr);
-        resp->addHeader("Content-Length",
-                        std::to_string(bodyStr.size())); // 别忘了这个！
+        resp->addHeader("Content-Length", std::to_string(bodyStr.size()));
 
         LOG_INFO << "分配 DataNode 成功: " << dataNode->addr_.toIpPort()
                  << ", public_url="
                  << (dataNode->publicUrl_.empty() ? "(fallback to internal)"
-                                                 : dataNode->publicUrl_)
+                                                  : dataNode->publicUrl_)
                  << " 给文件 ID: " << fileId;
         return true;
     } catch (const json::parse_error &e) {
@@ -441,7 +661,8 @@ bool FileHandler::handleFileDownload(
     std::string nodeId = rs->getString(1);
     std::string original_filename = rs->getString(2);
     uintmax_t fileSize = rs->getInt64(3);
-    std::string serviceLevel = fetchUserServiceLevel(*mysql, userId);
+    std::string serviceLevel =
+        StorageFeatureService::instance().getUserServiceLevel(*mysql, userId);
     std::string sceneTag =
         SceneProfileService::instance().getUserSceneTag(*mysql, userId);
 
@@ -455,8 +676,7 @@ bool FileHandler::handleFileDownload(
     }
     SceneProfileService::instance().incrementDownloadCount(*mysql, fileId);
     auto fileResponse = TokenManager::instance().generateDownloadToken(
-        userId, original_filename, serverFilename,
-        sceneTag,
+        userId, original_filename, serverFilename, sceneTag,
         NodeManager::instance().buildQoSPolicy(serviceLevel, true));
 
     // 返回 DataNode 播放地址
@@ -464,6 +684,8 @@ bool FileHandler::handleFileDownload(
                      {"data",
                       {{"downloadUrl", buildNodeAccessBaseUrl(nodeInfo) +
                                            "/api/datanode/download"},
+                       {"previewUrl", buildNodeAccessBaseUrl(nodeInfo) +
+                                          "/api/datanode/text_preview"},
                        {"token", fileResponse},
                        {"fileSize", fileSize}}}};
 
@@ -471,6 +693,136 @@ bool FileHandler::handleFileDownload(
     std::string respBody = response.dump();
     resp->setBody(respBody);
     resp->addHeader("Content-Length", std::to_string(respBody.size()));
+    return true;
+}
+
+bool FileHandler::handleCreateFolder(
+    const fileserver::net::TcpConnectionPtr &conn,
+    fileserver::net::HttpRequest &req,
+    std::shared_ptr<fileserver::net::HttpResponse> &resp) {
+    if (req.method() != fn::HttpRequest::kPost || req.path() != "/folders") {
+        return false;
+    }
+
+    const std::string authHeader = req.getHeader("Authorization");
+    if (authHeader.empty() || authHeader.find("Bearer ") != 0) {
+        sendError(resp, "未授权的访问，请先登录",
+                  fn::HttpResponse::k401Unauthorized, conn);
+        return true;
+    }
+
+    const int userId =
+        TokenManager::instance().verifyUserToken(authHeader.substr(7));
+    if (userId < 0) {
+        sendError(resp, "Token 无效或已过期，请重新登录",
+                  fn::HttpResponse::k401Unauthorized, conn);
+        return true;
+    }
+
+    auto mysql = db::MySQLPool::instance().getConnection();
+    if (!mysql) {
+        sendError(resp, "数据库连接失败",
+                  fn::HttpResponse::k500InternalServerError, conn);
+        return true;
+    }
+
+    try {
+        const json requestData = json::parse(req.body());
+        const std::string folderName = requestData.value("name", "");
+        const int parentFolderId = requestData.value("parent_id", 0);
+
+        auto &storageService = StorageFeatureService::instance();
+        if (parentFolderId > 0 &&
+            !storageService.folderExists(*mysql, userId, parentFolderId)) {
+            sendError(resp, "父目录不存在", fn::HttpResponse::k404NotFound,
+                      conn);
+            return true;
+        }
+
+        const int folderId = storageService.ensureFolderPath(
+            *mysql, userId, parentFolderId, {folderName});
+        if (folderId <= 0) {
+            sendError(resp, "创建目录失败",
+                      fn::HttpResponse::k500InternalServerError, conn);
+            return true;
+        }
+
+        auto folder = storageService.getFolderInfo(*mysql, userId, folderId);
+        json response = {{"code", 0},
+                         {"message", "目录创建成功"},
+                         {"folder",
+                          {{"id", folder.id},
+                           {"parentId", folder.parentId},
+                           {"name", folder.name},
+                           {"fullPath", folder.fullPath},
+                           {"createdAt", folder.createdAt}}}};
+        const std::string body = response.dump();
+        resp->setStatusCode(fn::HttpResponse::k200Ok);
+        resp->setContentType("application/json");
+        resp->setBody(body);
+        resp->addHeader("Content-Length", std::to_string(body.size()));
+        return true;
+    } catch (const std::exception &e) {
+        sendError(resp, "创建目录失败：" + std::string(e.what()),
+                  fn::HttpResponse::k500InternalServerError, conn);
+        return true;
+    }
+}
+
+bool FileHandler::handleListFolders(
+    const fileserver::net::TcpConnectionPtr &conn,
+    fileserver::net::HttpRequest &req,
+    std::shared_ptr<fileserver::net::HttpResponse> &resp) {
+    if (req.method() != fn::HttpRequest::kGet || req.path() != "/folders") {
+        return false;
+    }
+
+    const std::string authHeader = req.getHeader("Authorization");
+    if (authHeader.empty() || authHeader.find("Bearer ") != 0) {
+        sendError(resp, "未授权的访问，请先登录",
+                  fn::HttpResponse::k401Unauthorized, conn);
+        return true;
+    }
+
+    const int userId =
+        TokenManager::instance().verifyUserToken(authHeader.substr(7));
+    if (userId < 0) {
+        sendError(resp, "Token 无效或已过期，请重新登录",
+                  fn::HttpResponse::k401Unauthorized, conn);
+        return true;
+    }
+
+    auto mysql = db::MySQLPool::instance().getConnection();
+    if (!mysql) {
+        sendError(resp, "数据库连接失败",
+                  fn::HttpResponse::k500InternalServerError, conn);
+        return true;
+    }
+
+    const int parentFolderId = parsePositiveInt(req.getQuery("parent_id"), 0);
+    auto &storageService = StorageFeatureService::instance();
+    if (parentFolderId > 0 &&
+        !storageService.folderExists(*mysql, userId, parentFolderId)) {
+        sendError(resp, "目录不存在", fn::HttpResponse::k404NotFound, conn);
+        return true;
+    }
+
+    json folders = json::array();
+    for (const auto &folder :
+         storageService.listFolders(*mysql, userId, parentFolderId)) {
+        folders.push_back({{"id", folder.id},
+                           {"parentId", folder.parentId},
+                           {"name", folder.name},
+                           {"fullPath", folder.fullPath},
+                           {"createdAt", folder.createdAt}});
+    }
+
+    json response = {{"code", 0}, {"folders", folders}};
+    const std::string body = response.dump();
+    resp->setStatusCode(fn::HttpResponse::k200Ok);
+    resp->setContentType("application/json");
+    resp->setBody(body);
+    resp->addHeader("Content-Length", std::to_string(body.size()));
     return true;
 }
 

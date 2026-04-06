@@ -21,16 +21,14 @@
 DataNode::DataNode(fn::EventLoop *loop, const fn::InetAddress &listenAddr,
                    const fn::InetAddress &masterAddr)
     : loop_(loop) {
-    std::string publicUrl =
-        Config::instance().getString("datanode.public_url");
+    std::string publicUrl = Config::instance().getString("datanode.public_url");
     if (publicUrl.empty()) {
         publicUrl = "http://" + listenAddr.toIpPort();
     } else if (!publicUrl.empty() && publicUrl.back() == '/') {
         publicUrl.pop_back();
     }
-    masterClient_ = std::make_unique<MasterClient>(loop, masterAddr,
-                                                   listenAddr, publicUrl,
-                                                   this);
+    masterClient_ = std::make_unique<MasterClient>(loop, masterAddr, listenAddr,
+                                                   publicUrl, this);
     datanodeServer_ =
         std::make_unique<fn::HttpServer>(loop, listenAddr, "datanodeServer");
     handler_ = std::make_shared<DataNodeHttpHandler>(this);

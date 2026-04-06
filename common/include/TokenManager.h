@@ -26,6 +26,8 @@ class TokenManager {
         std::string original_filename;
         std::string server_filename;
         std::string created_time;
+        std::string scene_tag = "general";
+        bool batch_mode = false;
         QoSPolicy qos_policy;
     };
 
@@ -106,6 +108,8 @@ class TokenManager {
                                            const std::string &original_filename,
                                            const std::string &server_filename,
                                            const std::string &created_time,
+                                           const std::string &scene_tag,
+                                           bool batch_mode,
                                            const QoSPolicy &qos_policy);
 
     /// @brief 生成文件下载token

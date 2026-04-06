@@ -12,6 +12,7 @@
 #include <cstring>
 #include <fcntl.h>
 #include <filesystem>
+#include <fstream>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -22,7 +23,9 @@
 namespace {
 constexpr uintmax_t kDownloadChunkSize = 1024 * 1024; // 1MB
 constexpr uintmax_t kLearningLargeFileThreshold = 50ULL * 1024ULL * 1024ULL;
-constexpr int kLearningPrefetchChunkCount = 2;
+constexpr uintmax_t kVipPrefetchWindowBytes = 10ULL * 1024ULL * 1024ULL;
+constexpr uintmax_t kLearningPrefetchWindowBytes = 5ULL * 1024ULL * 1024ULL;
+constexpr uintmax_t kPreviewFileSizeLimit = 2ULL * 1024ULL * 1024ULL;
 
 std::shared_ptr<TokenBucketRateLimiter>
 buildRateLimiter(const TokenManager::QoSPolicy &qosPolicy) {
@@ -93,11 +96,12 @@ bool FileUploadContext::releaseTransferCounter() {
 // --------------FileDownContext--------------
 FileDownContext::FileDownContext(
     const std::string &filepath, const std::string &originalFilename,
-    const std::string &sceneTag,
+    const std::string &sceneTag, const std::string &serviceLevel,
     std::shared_ptr<TokenBucketRateLimiter> rateLimiter,
     std::shared_ptr<PrefetchCache> prefetchCache, ThreadPool *ioThreadPool)
     : filepath_(filepath), originalFilename_(originalFilename),
-      sceneTag_(sceneTag), fd_(-1), rateLimiter_(std::move(rateLimiter)),
+      sceneTag_(sceneTag), serviceLevel_(serviceLevel), fd_(-1),
+      rateLimiter_(std::move(rateLimiter)),
       prefetchCache_(std::move(prefetchCache)), fileSize_(0),
       currentPosition_(0), isComplete_(false), ioThreadPool_(ioThreadPool) {
     fileSize_ = fs::file_size(filepath_);
@@ -157,6 +161,12 @@ bool FileDownContext::readNextChunk(std::string &chunk) {
             return false;
         }
         buffer.resize(static_cast<size_t>(readBytes));
+
+        // 主线程读完磁盘后，如果开启了预取，顺手把这块数据也塞进缓存
+        if (shouldUsePrefetchCache()) {
+            prefetchCache_->put(buildCacheKey(currentPosition_), buffer,
+                                isVipUser());
+        }
     }
 
     chunk.assign(buffer.data(), buffer.size());
@@ -166,8 +176,9 @@ bool FileDownContext::readNextChunk(std::string &chunk) {
     }
 
     // 核心创新点：触发异步预取！
-    // 如果是学习场景，我不仅把当前这块发给用户，我还要派个小弟去把后面的数据提前读出来！
+    // 如果是学习场景，不仅把当前这块发给用户，还调用线程池把后面的数据提前读出来！
     if (shouldUsePrefetchCache()) {
+        LOG_DEBUG << "start to schedule prefetch window";
         schedulePrefetchWindow(currentPosition_);
     }
 
@@ -178,41 +189,90 @@ bool FileDownContext::readNextChunk(std::string &chunk) {
 }
 
 bool FileDownContext::shouldUsePrefetchCache() const {
-    return sceneTag_ == "learning" && prefetchCache_ != nullptr &&
-           fileSize_ > kLearningLargeFileThreshold;
+    if (!prefetchCache_) {
+        return false;
+    }
+
+    if (isVipUser()) {
+        return true;
+    }
+
+    return isLearningUser() && fileSize_ > kLearningLargeFileThreshold;
+}
+
+bool FileDownContext::isVipUser() const { return serviceLevel_ == "vip"; }
+
+bool FileDownContext::isLearningUser() const { return sceneTag_ == "learning"; }
+
+uintmax_t FileDownContext::getPrefetchWindowBytes() const {
+    if (isVipUser()) {
+        return kVipPrefetchWindowBytes;
+    }
+    if (isLearningUser()) {
+        return kLearningPrefetchWindowBytes;
+    }
+    return 0;
+}
+
+uintmax_t FileDownContext::getPrefetchLowWaterBytes() const {
+    const uintmax_t windowBytes = getPrefetchWindowBytes();
+    return std::max<uintmax_t>(kDownloadChunkSize, windowBytes / 2);
 }
 
 std::string FileDownContext::buildCacheKey(uintmax_t offset) const {
     return filepath_ + "_" + std::to_string(offset);
 }
 
-void FileDownContext::schedulePrefetchWindow(uintmax_t nextOffset) const {
+void FileDownContext::schedulePrefetchWindow(uintmax_t nextOffset) {
     if (!shouldUsePrefetchCache() || nextOffset >= fileSize_) {
         return;
     }
 
+    const uintmax_t lowWaterBytes = getPrefetchLowWaterBytes();
+    const uintmax_t prefetchWindowBytes = getPrefetchWindowBytes();
+
+    // 向全局缓存查询，从nextOffset 开始，后面连续有多少数据是安全的？
+    uintmax_t safeBytes = prefetchCache_->getContinuousCachedBytes(
+        filepath_, nextOffset, prefetchWindowBytes, kDownloadChunkSize);
+
+    // 如果安全的数据量还高于低水位线，说明缓存充足，不需要唤醒后台线程
+    if (safeBytes > lowWaterBytes) {
+        LOG_INFO << "Global cache is sufficient (safety margin:" << safeBytes
+                 << " > lowWater:" << lowWaterBytes << "), skip prefetch";
+        return;
+    }
     // 确保线程池指针不为空
     if (!ioThreadPool_) {
         LOG_WARN << "IO ThreadPool is null, skipping prefetch";
         return;
     }
 
-    std::string filepath = filepath_;
-    uintmax_t fileSize = fileSize_;
+    const std::string filepath = filepath_;
+    const uintmax_t fileSize = fileSize_;
+    const bool isVip = isVipUser();
     auto cache = prefetchCache_;
 
-    ioThreadPool_->run([filepath, fileSize, nextOffset, cache]() {
+    uintmax_t actualStartOffset = nextOffset + safeBytes;
+
+    ioThreadPool_->run([filepath, fileSize, actualStartOffset, safeBytes,
+                        prefetchWindowBytes, isVip, cache]() {
         int fd = ::open(filepath.c_str(), O_RDONLY);
         if (fd < 0) {
             return;
         }
 
-        uintmax_t offset = nextOffset;
-        for (int i = 0; i < kLearningPrefetchChunkCount && offset < fileSize;
-             i++) {
+        uintmax_t offset = actualStartOffset;
+        // 还要读多少字节(总窗口-已经安全的字节)
+        uintmax_t remainingBytes = prefetchWindowBytes - safeBytes;
+        uintmax_t prefetchedBytes = 0;
+        while (offset < fileSize && prefetchedBytes < remainingBytes) {
             uintmax_t bytesToRead =
                 std::min(kDownloadChunkSize, fileSize - offset);
             std::string key = filepath + "_" + std::to_string(offset);
+            if (!cache->shouldAdmitPrefetch(static_cast<size_t>(bytesToRead),
+                                            isVip)) {
+                break;
+            }
             if (!cache->tryMarkLoading(key)) {
                 offset += bytesToRead;
                 continue;
@@ -228,8 +288,11 @@ void FileDownContext::schedulePrefetchWindow(uintmax_t nextOffset) const {
             }
 
             buffer.resize(static_cast<size_t>(readBytes));
-            cache->put(key, std::move(buffer));
+            cache->put(key, std::move(buffer), isVip);
             offset += static_cast<uintmax_t>(readBytes);
+            prefetchedBytes += static_cast<uintmax_t>(readBytes);
+            LOG_INFO << "prefetched:" << prefetchedBytes
+                     << "bytes. Total:" << cache->currentBytes();
         }
 
         ::close(fd);
@@ -250,6 +313,7 @@ DataNodeHttpHandler::DataNodeHttpHandler(DataNode *datanode, int numThreads)
 
     // 初始化路由表
     initRoutes();
+    LOG_INFO << "Current prefetch bytes: " << prefetchCache_->currentBytes();
 }
 
 DataNodeHttpHandler::~DataNodeHttpHandler() {}
@@ -291,6 +355,11 @@ void DataNodeHttpHandler::initRoutes() {
              [this](const TcpConnectionPtr &conn, HttpRequest &req,
                     std::shared_ptr<HttpResponse> &resp) {
                  return handleFileDownload(conn, req, resp);
+             });
+    addRoute("/api/datanode/text_preview", HttpRequest::kGet,
+             [this](const TcpConnectionPtr &conn, HttpRequest &req,
+                    std::shared_ptr<HttpResponse> &resp) {
+                 return handleTextPreview(conn, req, resp);
              });
     addRoute("/api/datanode/delete", fileserver::net::HttpRequest::kPost,
              [this](const TcpConnectionPtr &conn, HttpRequest &req,
@@ -352,7 +421,7 @@ bool DataNodeHttpHandler::handleFileUpload(
         resp->addHeader("Access-Control-Allow-Origin", "*");
         // 允许的方法
         resp->addHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-        // 允许前端携带的自定义请求头（非常重要，少一个都不行！）
+        // 允许前端携带的自定义请求头
         resp->addHeader("Access-Control-Allow-Headers",
                         "Authorization, Content-Type, X-File-Name");
         // 让浏览器缓存这个预检结果 24 小时，不用每次上传都发 OPTIONS
@@ -362,8 +431,7 @@ bool DataNodeHttpHandler::handleFileUpload(
         return true;
     }
 
-    // ⚠️ 极其重要：即使是真正的 POST
-    // 响应，也必须带上跨域头，否则前端拿不到响应数据！
+    // 即使是真正的 POST响应，也必须带上跨域头，否则前端拿不到响应数据！
     resp->addHeader("Access-Control-Allow-Origin", "*");
 
     // 验证Token
@@ -583,6 +651,7 @@ bool DataNodeHttpHandler::handleFileDownload(
 
     auto downContext = std::make_shared<FileDownContext>(
         filepath, downloadPayload.original_filename, downloadPayload.scene_tag,
+        downloadPayload.qos_policy.service_level,
         buildRateLimiter(downloadPayload.qos_policy), prefetchCache_,
         &threadPool_);
     downContext->seekTo(startPos);
@@ -621,6 +690,84 @@ bool DataNodeHttpHandler::handleFileDownload(
             return true;
         });
 
+    return true;
+}
+
+bool DataNodeHttpHandler::isPreviewableTextFile(
+    const std::string &filename) const {
+    static const std::unordered_set<std::string> previewableExts = {
+        "cpp", "cc",  "c",    "h",  "hpp", "py",  "js", "json",
+        "ts",  "tsx", "java", "go", "rs",  "txt", "md"};
+
+    auto pos = filename.find_last_of('.');
+    if (pos == std::string::npos || pos + 1 >= filename.size()) {
+        return false;
+    }
+
+    std::string ext = filename.substr(pos + 1);
+    std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+    return previewableExts.count(ext) > 0;
+}
+
+bool DataNodeHttpHandler::handleTextPreview(
+    const TcpConnectionPtr &conn, HttpRequest &req,
+    std::shared_ptr<HttpResponse> &resp) {
+    if (req.method() == fileserver::net::HttpRequest::kOptions) {
+        resp->setStatusCode(fn::HttpResponse::k200Ok);
+        resp->addHeader("Access-Control-Allow-Origin", "*");
+        resp->addHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+        resp->addHeader("Access-Control-Allow-Headers", "Authorization");
+        return true;
+    }
+
+    resp->addHeader("Access-Control-Allow-Origin", "*");
+
+    const std::string token = req.getQuery("token");
+    TokenManager::downloadTokenPayload downloadPayload;
+    if (!TokenManager::instance().verifyDownloadToken(token, downloadPayload)) {
+        sendError(resp, "非法请求", HttpResponse::k403Forbidden, conn);
+        return true;
+    }
+
+    if (downloadPayload.scene_tag != "development") {
+        sendError(resp, "当前场景不支持代码预览", HttpResponse::k403Forbidden,
+                  conn);
+        return true;
+    }
+
+    if (!isPreviewableTextFile(downloadPayload.original_filename)) {
+        sendError(resp, "该文件类型不支持文本预览",
+                  HttpResponse::k400BadRequest, conn);
+        return true;
+    }
+
+    const std::string filepath =
+        uploadDir_ + "/" + downloadPayload.server_filename;
+    if (!fs::exists(filepath)) {
+        sendError(resp, "文件丢失", HttpResponse::k404NotFound, conn);
+        return true;
+    }
+
+    const uintmax_t fileSize = fs::file_size(filepath);
+    if (fileSize > kPreviewFileSizeLimit) {
+        sendError(resp, "预览仅支持 2MB 以内的文本文件",
+                  HttpResponse::k400BadRequest, conn);
+        return true;
+    }
+
+    std::ifstream file(filepath, std::ios::binary);
+    if (!file.is_open()) {
+        sendError(resp, "文件读取失败", HttpResponse::k500InternalServerError,
+                  conn);
+        return true;
+    }
+
+    std::string content((std::istreambuf_iterator<char>(file)),
+                        std::istreambuf_iterator<char>());
+    resp->setStatusCode(HttpResponse::k200Ok);
+    resp->setContentType("text/plain; charset=utf-8");
+    resp->setBody(content);
+    resp->addHeader("Content-Length", std::to_string(content.size()));
     return true;
 }
 

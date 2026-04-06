@@ -183,6 +183,16 @@ void MasterHttpHandler::initRoutes() {
                            std::shared_ptr<HttpResponse> &resp) {
                  return fileHandler->handleListFiles(conn, req, resp);
              });
+    addRoute("/folders", HttpRequest::kGet,
+             [fileHandler](const TcpConnectionPtr &conn, HttpRequest &req,
+                           std::shared_ptr<HttpResponse> &resp) {
+                 return fileHandler->handleListFolders(conn, req, resp);
+             });
+    addRoute("/folders", HttpRequest::kPost,
+             [fileHandler](const TcpConnectionPtr &conn, HttpRequest &req,
+                           std::shared_ptr<HttpResponse> &resp) {
+                 return fileHandler->handleCreateFolder(conn, req, resp);
+             });
     addRoute("/download/([^/]+)", fileserver::net::HttpRequest::kGet,
              [fileHandler](const TcpConnectionPtr &conn, HttpRequest &req,
                            std::shared_ptr<HttpResponse> &resp) {
