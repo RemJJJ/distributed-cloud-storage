@@ -11,6 +11,45 @@
 #include "net/HttpResponse.h"
 #include <memory>
 
+namespace {
+void cleanupFileRecordById(db::MySQLPool::ConnectionGuard &mysql, int fileId) {
+    db::MySQLStatement delShareStmt(mysql,
+                                    "DELETE FROM file_shares WHERE file_id = ?");
+    delShareStmt.bindInt(fileId);
+    if (!delShareStmt.execute()) {
+        LOG_WARN << "Failed to delete file_shares for file_id=" << fileId
+                 << ": " << delShareStmt.getError();
+    }
+
+    db::MySQLStatement delFileStmt(mysql, "DELETE FROM files WHERE id = ?");
+    delFileStmt.bindInt(fileId);
+    if (!delFileStmt.execute()) {
+        LOG_WARN << "Failed to delete files row for file_id=" << fileId
+                 << ": " << delFileStmt.getError();
+    }
+}
+
+bool hasOtherPhysicalReferences(db::MySQLPool::ConnectionGuard &mysql, int fileId,
+                                const std::string &nodeId,
+                                const std::string &serverFilename) {
+    db::MySQLStatement stmt(
+        mysql,
+        "SELECT COUNT(*) FROM files "
+        "WHERE id <> ? AND node_id = ? AND filename = ? "
+        "AND status = 'success' AND is_deleted <> 2");
+    stmt.bindInt(fileId);
+    stmt.bindString(nodeId);
+    stmt.bindString(serverFilename);
+    if (!stmt.execute()) {
+        LOG_WARN << "Failed to query physical reference count for file_id="
+                 << fileId << ": " << stmt.getError();
+        return true;
+    }
+    auto rs = stmt.getResultSet();
+    return rs && rs->next() && rs->getInt(0) > 0;
+}
+} // namespace
+
 MasterHttpHandler::MasterHttpHandler(int numThreads)
     : threadPool_("UploadHandler"), uploadDir_("uploads") {
     threadPool_.start(numThreads);
@@ -49,6 +88,16 @@ void MasterHttpHandler::processGarbageCollection(EventLoop *loop) {
         std::string nodeId = rs->getString(1);
         std::string serverFilename = rs->getString(2);
 
+        // 秒传会让多条记录共享同一个物理文件。只要还有别的逻辑引用存在，
+        // 当前这条硬删除记录就只能删数据库行，不能删物理文件。
+        if (hasOtherPhysicalReferences(*mysql, fileId, nodeId, serverFilename)) {
+            cleanupFileRecordById(*mysql, fileId);
+            LOG_INFO << "GC cleanup DB row only because physical file is still "
+                        "referenced. file_id="
+                     << fileId << ", server_filename=" << serverFilename;
+            continue;
+        }
+
         // 检查文件所在datanode是否存活
         auto nodeInfo = NodeManager::instance().getNodeInfo(nodeId);
         if (nodeInfo && nodeInfo->isAlive_) {
@@ -71,6 +120,56 @@ void MasterHttpHandler::processGarbageCollection(EventLoop *loop) {
     if (taskCount > 0) {
         LOG_INFO << "This round GC start " << taskCount
                  << " async physial delete task(s)";
+    }
+}
+
+void MasterHttpHandler::processStaleUploadingFiles(EventLoop *loop) {
+    auto mysql = db::MySQLPool::instance().getConnection();
+    if (!mysql) {
+        return;
+    }
+
+    constexpr int kStaleUploadingMinutes = 30;
+    db::MySQLStatement stmt(
+        *mysql,
+        "SELECT id, node_id, filename FROM files "
+        "WHERE status = 'uploading' "
+        "AND created_at < DATE_SUB(NOW(), INTERVAL 30 MINUTE) "
+        "LIMIT 50");
+    if (!stmt.execute()) {
+        LOG_ERROR << "Stale uploading scan failed: " << stmt.getError();
+        return;
+    }
+
+    auto rs = stmt.getResultSet();
+    int taskCount = 0;
+    int cleanedRows = 0;
+
+    while (rs && rs->next()) {
+        const int fileId = rs->getInt(0);
+        const std::string nodeId = rs->getString(1);
+        const std::string serverFilename = rs->getString(2);
+
+        auto nodeInfo = NodeManager::instance().getNodeInfo(nodeId);
+        if (nodeInfo && nodeInfo->isAlive_) {
+            std::string deleteToken =
+                TokenManager::instance().generateDeleteToken(serverFilename);
+            auto task = std::make_shared<AsyncDeleteTask>(loop, nodeInfo->addr_,
+                                                          deleteToken, fileId);
+            task->start();
+            taskCount++;
+        } else {
+            cleanupFileRecordById(*mysql, fileId);
+            cleanedRows++;
+            LOG_WARN << "Clean stale uploading DB row directly because node is "
+                        "offline. file_id="
+                     << fileId << ", stale_minutes>=" << kStaleUploadingMinutes;
+        }
+    }
+
+    if (taskCount > 0 || cleanedRows > 0) {
+        LOG_INFO << "Stale uploading cleanup scheduled=" << taskCount
+                 << ", cleaned_db_only=" << cleanedRows;
     }
 }
 

@@ -321,7 +321,7 @@ void NodeManager::refreshClusterQosModeLocked() {
 
     // 当前集群所有连接数
     const int totalActiveTransfers = getTotalActiveTransfersLocked();
-    LOG_DEBUG << "当前集群所有连接数：" << totalActiveTransfers;
+    LOG_DEBUG << "Current connections in cluster: " << totalActiveTransfers;
 
     ClusterQosMode oldMode = clusterQosMode_;
 
@@ -333,10 +333,10 @@ void NodeManager::refreshClusterQosModeLocked() {
         clusterQosMode_ = ClusterQosMode::kElastic;
     }
 
-    LOG_DEBUG << "集群策略："
-              << (clusterQosMode_ == NodeManager::ClusterQosMode::kElastic
-                      ? "elastic"
-                      : "strict");
+    LOG_INFO << "cluster mode:"
+             << (clusterQosMode_ == NodeManager::ClusterQosMode::kElastic
+                     ? "elastic"
+                     : "strict");
 
     if (oldMode != clusterQosMode_) {
         LOG_INFO << "Cluster QoS mode switched to "

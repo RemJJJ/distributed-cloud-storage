@@ -43,9 +43,8 @@ bool DataNodeHandler::handleRegisterNode(
         // 提取DataNode传来的老ID
         std::string reported_node_id = json.value("node_id", "");
         fn::InetAddress addr(node_ip, node_port);
-        auto RegisterResponse =
-            NodeManager::instance().registerNode(reported_node_id, addr,
-                                                public_url);
+        auto RegisterResponse = NodeManager::instance().registerNode(
+            reported_node_id, addr, public_url);
 
         if (RegisterResponse.node_id.empty()) {
             sendError(resp, "Failed to generate token",
@@ -127,17 +126,16 @@ bool DataNodeHandler::handleHeartbeat(const fn::TcpConnectionPtr &conn,
         uint64_t disk_free = jsonData.value("disk_free_mb", 0ULL);
         int active_uploads = jsonData.value("active_uploads", 0);
         int active_downloads = jsonData.value("active_downloads", 0);
-        int active_transfers =
-            jsonData.value("active_transfers",
-                           active_uploads + active_downloads);
+        int active_transfers = jsonData.value(
+            "active_transfers", active_uploads + active_downloads);
 
         fn::InetAddress newAddr(node_ip, node_port);
-        NodeManager::instance().updateHeartbeat(node_id, newAddr, disk_total,
-                                                disk_free, active_uploads,
-                                                active_downloads,
-                                                active_transfers, public_url);
+        NodeManager::instance().updateHeartbeat(
+            node_id, newAddr, disk_total, disk_free, active_uploads,
+            active_downloads, active_transfers, public_url);
 
-        LOG_INFO << "心跳更新成功：" << node_id << " @ " << newAddr.toIpPort();
+        LOG_INFO << "update heartbeat success:" << node_id << " @ "
+                 << newAddr.toIpPort();
     } catch (const json::parse_error &e) {
         LOG_WARN << "JSON parse error: " << e.what();
         sendError(resp, "Invalid JSON format",
@@ -307,8 +305,8 @@ bool DataNodeHandler::handleReportFiles(
             return true;
         }
 
-        std::string querySql =
-            "SELECT id, filename, status FROM files WHERE nodes_id = ?";
+        std::string querySql = "SELECT id, filename, status, is_deleted FROM "
+                               "files WHERE node_id = ?";
         db::MySQLStatement queryStmt(*mysql, querySql);
         queryStmt.bindString(reqNodeId);
 
@@ -316,6 +314,8 @@ bool DataNodeHandler::handleReportFiles(
             auto rs = queryStmt.getResultSet();
             int lostCount = 0;
             int recoveredCount = 0;
+            json orphanFiles = json::array();
+            std::unordered_set<std::string> referencedFiles;
 
             // 更新语句
             std::string markLostSql =
@@ -327,10 +327,16 @@ bool DataNodeHandler::handleReportFiles(
                 int fileId = rs->getInt(0);
                 std::string dbFilename = rs->getString(1);
                 std::string dbStatus = rs->getString(2);
+                int isDeleted = rs->getInt(3);
+
+                if (isDeleted != 2) {
+                    referencedFiles.insert(dbFilename);
+                }
 
                 if (physicalFiles.find(dbFilename) == physicalFiles.end()) {
                     // 数据库有，datanode没有 ->文件丢失
-                    if (dbStatus == "success" || dbStatus == "uploading") {
+                    if (isDeleted != 2 &&
+                        (dbStatus == "success" || dbStatus == "uploading")) {
                         db::MySQLStatement updateStmt(*mysql, markLostSql);
                         updateStmt.bindInt(fileId);
                         updateStmt.execute();
@@ -351,17 +357,30 @@ bool DataNodeHandler::handleReportFiles(
                     }
                 }
             }
+
+            for (const auto &physicalFilename : physicalFiles) {
+                if (referencedFiles.find(physicalFilename) ==
+                    referencedFiles.end()) {
+                    orphanFiles.push_back(physicalFilename);
+                }
+            }
             LOG_INFO << "DataNode " << reqNodeId
                      << " reconciliation complete. Lost: " << lostCount
-                     << ". Fixed: " << recoveredCount;
-        }
+                     << ". Fixed: " << recoveredCount
+                     << ". Orphan files: " << orphanFiles.size();
 
-        json respJson = {{"code", 0}, {"message", "Report handle complete"}};
-        std::string bodyStr = respJson.dump();
-        resp->setStatusCode(fileserver::net::HttpResponse::k200Ok);
-        resp->setContentType("application/json");
-        resp->setBody(bodyStr);
-        resp->addHeader("Content-Length", std::to_string(bodyStr.size()));
+            json respJson = {{"code", 0},
+                             {"message", "Report handle complete"},
+                             {"orphan_files", orphanFiles}};
+            std::string bodyStr = respJson.dump();
+            resp->setStatusCode(fileserver::net::HttpResponse::k200Ok);
+            resp->setContentType("application/json");
+            resp->setBody(bodyStr);
+            resp->addHeader("Content-Length", std::to_string(bodyStr.size()));
+            return true;
+        }
+        sendError(resp, "Report query failed",
+                  fn::HttpResponse::k500InternalServerError, conn);
         return true;
     } catch (const std::exception &e) {
         LOG_ERROR << "Handle report error: " << e.what();

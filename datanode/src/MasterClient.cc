@@ -150,6 +150,8 @@ void MasterClient::parseResponseBody(const std::string &body) {
 
         if (respJson.contains("node_id") && respJson.contains("token")) {
             handleRegisterResponse(body);
+        } else if (respJson.contains("orphan_files")) {
+            handleReportFilesResponse(respJson);
         } else if (respJson.contains("code")) {
             int code = respJson["code"].get<int>();
             if (code != 0) {
@@ -159,6 +161,32 @@ void MasterClient::parseResponseBody(const std::string &body) {
     } catch (const json::exception &e) {
         LOG_DEBUG << "响应 body 不是 JSON: " << e.what();
     }
+}
+
+void MasterClient::handleReportFilesResponse(const json &respJson) {
+    std::vector<std::string> orphanFiles =
+        respJson.value("orphan_files", std::vector<std::string>{});
+    if (orphanFiles.empty()) {
+        return;
+    }
+
+    int deletedCount = 0;
+    for (const auto &filename : orphanFiles) {
+        try {
+            const fs::path filepath = fs::path("uploads") / filename;
+            if (fs::exists(filepath) && fs::is_regular_file(filepath)) {
+                fs::remove(filepath);
+                deletedCount++;
+                LOG_WARN << "Delete orphan physical file after report_files: "
+                         << filepath.string();
+            }
+        } catch (const std::exception &e) {
+            LOG_ERROR << "Failed to delete orphan physical file " << filename
+                      << ": " << e.what();
+        }
+    }
+    LOG_INFO << "Report_files orphan cleanup complete, deleted_count="
+             << deletedCount;
 }
 
 void MasterClient::handleRegisterResponse(const std::string &response) {

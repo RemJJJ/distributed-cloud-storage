@@ -5,6 +5,7 @@
 #include "net/EventLoop.h"
 #include "net/HttpContext.h"
 #include "net/TcpClient.h"
+#include <nlohmann/json.hpp>
 #include <queue>
 
 namespace fn = fileserver::net;
@@ -78,6 +79,7 @@ class MasterClient {
 
     /// @brief 解析JSON Body
     void parseResponseBody(const std::string &body);
+    void handleReportFilesResponse(const nlohmann::json &respJson);
 
     /// @brief 全量扫描本地文件并汇报给Master
     void reportLocalFiles();

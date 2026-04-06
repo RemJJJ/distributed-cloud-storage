@@ -23,8 +23,8 @@
 namespace {
 constexpr uintmax_t kDownloadChunkSize = 1024 * 1024; // 1MB
 constexpr uintmax_t kLearningLargeFileThreshold = 50ULL * 1024ULL * 1024ULL;
-constexpr uintmax_t kVipPrefetchWindowBytes = 10ULL * 1024ULL * 1024ULL;
-constexpr uintmax_t kLearningPrefetchWindowBytes = 5ULL * 1024ULL * 1024ULL;
+constexpr uintmax_t kVipPrefetchWindowBytes = 20ULL * 1024ULL * 1024ULL;
+constexpr uintmax_t kLearningPrefetchWindowBytes = 10ULL * 1024ULL * 1024ULL;
 constexpr uintmax_t kPreviewFileSizeLimit = 2ULL * 1024ULL * 1024ULL;
 
 std::shared_ptr<TokenBucketRateLimiter>
@@ -302,7 +302,7 @@ void FileDownContext::schedulePrefetchWindow(uintmax_t nextOffset) {
 // --------------Handler--------------
 DataNodeHttpHandler::DataNodeHttpHandler(DataNode *datanode, int numThreads)
     : uploadDir_("uploads"), datanode_(datanode),
-      prefetchCache_(std::make_shared<PrefetchCache>()),
+      prefetchCache_(std::make_shared<PrefetchCache>(500 * 1024 * 1024)),
       threadPool_("DNHttpHandlerThreadPool") {
     threadPool_.start(numThreads);
     // 创建上传目录

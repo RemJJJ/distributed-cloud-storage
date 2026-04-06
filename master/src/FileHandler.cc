@@ -92,6 +92,18 @@ splitRelativeParentSegments(const std::string &relativePath) {
     }
     return segments;
 }
+
+std::string buildStoredRelativePath(const std::string &folderPath,
+                                    const std::string &requestRelativePath,
+                                    const std::string &originalFilename) {
+    if (!requestRelativePath.empty()) {
+        return requestRelativePath;
+    }
+    if (!folderPath.empty() && !originalFilename.empty()) {
+        return folderPath + "/" + originalFilename;
+    }
+    return "";
+}
 } // namespace
 
 FileHandler::FileHandler() {
@@ -414,6 +426,14 @@ bool FileHandler::handleFileUpload(
                       fn::HttpResponse::k500InternalServerError, conn);
             return true;
         }
+        std::string folderPath;
+        if (finalFolderId > 0) {
+            auto folderInfo =
+                storageService.getFolderInfo(*mysql, userId, finalFolderId);
+            folderPath = folderInfo.fullPath;
+        }
+        const std::string storedRelativePath =
+            buildStoredRelativePath(folderPath, relativePath, originalFilename);
 
         // MD5 秒传逻辑
         if (!fileMd5.empty()) {
@@ -461,7 +481,7 @@ bool FileHandler::handleFileUpload(
                     } else {
                         fastStmt.bindNull();
                     }
-                    fastStmt.bindString(relativePath);
+                    fastStmt.bindString(storedRelativePath);
                     fastStmt.bindString(currentTime); // 对应 created_at
                     fastStmt.bindString(currentTime); // 对应 updated_at
                     if (fastStmt.execute()) {
@@ -477,7 +497,7 @@ bool FileHandler::handleFileUpload(
                               {"size", fileSize},
                               {"createdAt", currentTime},
                               {"folderId", finalFolderId},
-                              {"relativePath", relativePath}}},
+                              {"relativePath", storedRelativePath}}},
                             {"storage",
                              {{"quotaBytes", storageSummary.quotaBytes},
                               {"usedBytes", storageSummary.usedBytes},
@@ -540,7 +560,7 @@ bool FileHandler::handleFileUpload(
         } else {
             stmt.bindNull();
         }
-        stmt.bindString(relativePath);
+        stmt.bindString(storedRelativePath);
         stmt.bindString(currentTime);
         stmt.bindString(currentTime);
 
