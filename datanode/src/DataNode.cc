@@ -44,7 +44,7 @@ DataNode::DataNode(fn::EventLoop *loop, const fn::InetAddress &listenAddr,
             return this->handler_->onRequest(conn, req, resp);
         });
 
-    datanodeServer_->setThreadNum(10);
+    datanodeServer_->setThreadNum(16);
 }
 
 DataNode::~DataNode() {}

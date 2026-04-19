@@ -164,7 +164,7 @@ class DataNodeHttpHandler : public BaseHandler {
     ThreadPool threadPool_;
 
   public:
-    DataNodeHttpHandler(DataNode *datanode, int numThreads = 4);
+    DataNodeHttpHandler(DataNode *datanode, int numThreads = 32);
 
     ~DataNodeHttpHandler();
 

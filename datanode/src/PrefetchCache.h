@@ -1,162 +1,168 @@
 #pragma once
 
 #include "base/Logging.h"
+#include <array>
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
-#include <list>
+#include <limits>
+#include <memory>
 #include <mutex>
+#include <shared_mutex>
 #include <string>
 #include <sys/types.h>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
-// 线程安全LRU(最近最少使用)
+// 读多写少场景下的分片缓存：
+// 1. 读路径只拿分片 shared_lock，不再被全局大锁串行化
+// 2. 缓存命中返回 shared_ptr，避免额外复制一份 vector
+// 3. 淘汰和过期清理由写路径偶发执行，避免每次 get 都做维护
 class PrefetchCache {
   public:
-    // 默认最大缓存100MB
+    using Buffer = std::vector<char>;
+    using BufferPtr = std::shared_ptr<const Buffer>;
+
     explicit PrefetchCache(size_t maxBytes = 100 * 1024 * 1024)
         : maxBytes_(maxBytes) {}
 
-    // 尝试从缓存中获取数据
-    bool get(const std::string &key, std::vector<char> &out) {
-        std::lock_guard<std::mutex> lock(mutex_);
-        pruneExpiredLocked();
-        auto it = entries_.find(key);
-        if (it == entries_.end()) {
-            return false; // 未命中
-        }
-
-        touchLocked(it); // 命中，把数据块移到LRU链表最前面
-        out = it->second.data;
-        return true;
-    }
-
-    // 防止“缓存击穿”
-    // 如果10个用户同时请求同一个还没缓存的视频块，防止10个人同时读磁盘
-    bool tryMarkLoading(const std::string &key) {
-        std::lock_guard<std::mutex> lock(mutex_);
-        pruneExpiredLocked();
-        // 已经在缓存里，或别人正在读
-        if (entries_.count(key) > 0 || loadingKeys_.count(key) > 0) {
+    bool get(const std::string &key, BufferPtr &out) const {
+        auto &shard = shardFor(key);
+        std::shared_lock<std::shared_mutex> lock(shard.mutex);
+        auto it = shard.entries.find(key);
+        if (it == shard.entries.end()) {
             return false;
         }
-        loadingKeys_.insert(key); // 标记为正在读磁盘
+
+        it->second->lastTouchNs.store(nowNs(), std::memory_order_relaxed);
+        out = it->second->data;
+        return static_cast<bool>(out);
+    }
+
+    bool tryMarkLoading(const std::string &key) {
+        auto &shard = shardFor(key);
+        std::unique_lock<std::shared_mutex> lock(shard.mutex);
+        if (shard.entries.find(key) != shard.entries.end() ||
+            shard.loadingKeys.find(key) != shard.loadingKeys.end()) {
+            return false;
+        }
+        shard.loadingKeys.insert(key);
         return true;
     }
 
     size_t currentBytes() const {
-        std::lock_guard<std::mutex> lock(mutex_);
-        pruneExpiredLocked();
-        return currentBytes_;
+        return currentBytes_.load(std::memory_order_relaxed);
     }
 
     size_t maxBytes() const { return maxBytes_; }
 
     bool shouldAdmitPrefetch(size_t incomingBytes, bool isVip) const {
-        std::lock_guard<std::mutex> lock(mutex_);
-        pruneExpiredLocked();
         if (incomingBytes == 0 || incomingBytes > maxBytes_) {
             return false;
         }
 
-        if (isVip) { // VIP永远放行
+        const size_t current = currentBytes_.load(std::memory_order_relaxed);
+        if (isVip) {
             return true;
         }
 
         const size_t normalSoftLimit =
             maxBytes_ > kVipReservedBytes ? (maxBytes_ - kVipReservedBytes) : 0;
+        const size_t normalBytes =
+            normalBytes_.load(std::memory_order_relaxed);
 
-        // 总容量超出多少
-        const size_t requiredForTotal =
-            currentBytes_ + incomingBytes > maxBytes_
-                ? (currentBytes_ + incomingBytes - maxBytes_)
-                : 0;
-
-        // 普通用户超出多少
-        const size_t requiredForNormal =
-            normalBytes_ + incomingBytes > normalSoftLimit
-                ? (normalBytes_ + incomingBytes - normalSoftLimit)
-                : 0;
-
-        // 当前缓存里，能被淘汰的普通用户数据，够不够腾出空间
-        return evictableNormalBytesLocked() >=
-               std::max(requiredForTotal, requiredForNormal);
+        // 普通用户优先使用普通区，若普通区已有内容则允许触发替换。
+        if (current + incomingBytes <= maxBytes_ &&
+            normalBytes + incomingBytes <= normalSoftLimit) {
+            return true;
+        }
+        return normalBytes > 0;
     }
 
-    // 读取失败时取消标记
     void cancelLoading(const std::string &key) {
-        std::lock_guard<std::mutex> lock(mutex_);
-        loadingKeys_.erase(key);
+        auto &shard = shardFor(key);
+        std::unique_lock<std::shared_mutex> lock(shard.mutex);
+        shard.loadingKeys.erase(key);
     }
 
-    // 把从磁盘读到的数据放进缓存
-    void put(const std::string &key, std::vector<char> data, bool isVip) {
-        std::lock_guard<std::mutex> lock(mutex_);
-        pruneExpiredLocked();
-        loadingKeys_.erase(key);
-
+    void put(const std::string &key, Buffer data, bool isVip) {
         if (data.empty() || data.size() > maxBytes_) {
+            cancelLoading(key);
             return;
         }
 
-        auto existing = entries_.find(key);
-        if (existing != entries_.end()) {
-            removeEntryLocked(existing);
-        }
+        maybePruneExpired();
 
-        if (isVip) {
-            evictIfNeededLocked(data.size());
-            if (currentBytes_ + data.size() > maxBytes_) {
-                return;
+        auto entry = std::make_shared<CacheEntry>();
+        entry->data = std::make_shared<Buffer>(std::move(data));
+        entry->size = entry->data->size();
+        entry->isVip = isVip;
+        entry->lastTouchNs.store(nowNs(), std::memory_order_relaxed);
+
+        auto &shard = shardFor(key);
+        size_t replacedBytes = 0;
+        bool replacedNormal = false;
+        {
+            std::unique_lock<std::shared_mutex> lock(shard.mutex);
+            shard.loadingKeys.erase(key);
+            auto existing = shard.entries.find(key);
+            if (existing != shard.entries.end()) {
+                replacedBytes = existing->second->size;
+                replacedNormal = !existing->second->isVip;
+                shard.entries.erase(existing);
             }
-        } else {
-            const size_t normalSoftLimit = maxBytes_ > kVipReservedBytes
-                                               ? (maxBytes_ - kVipReservedBytes)
-                                               : 0;
-            evictNormalIfNeededLocked(data.size(), normalSoftLimit);
-            if (currentBytes_ + data.size() > maxBytes_ ||
-                normalBytes_ + data.size() > normalSoftLimit) {
-                return;
+        }
+
+        if (replacedBytes > 0) {
+            currentBytes_.fetch_sub(replacedBytes, std::memory_order_relaxed);
+            if (replacedNormal) {
+                normalBytes_.fetch_sub(replacedBytes, std::memory_order_relaxed);
             }
         }
 
-        lruKeys_.push_front(key);
-
-        CacheEntry entry;
-        entry.data = std::move(data);
-        entry.lruIt = lruKeys_.begin();
-        entry.lastAccess = std::chrono::steady_clock::now();
-        entry.isVip = isVip;
-
-        currentBytes_ += entry.data.size();
-        if (!entry.isVip) {
-            normalBytes_ += entry.data.size();
+        if (!makeSpaceFor(entry->size, isVip)) {
+            return;
         }
-        entries_.emplace(key, std::move(entry));
+
+        const size_t insertedBytes = entry->size;
+        {
+            std::unique_lock<std::shared_mutex> lock(shard.mutex);
+            auto existing = shard.entries.find(key);
+            if (existing != shard.entries.end()) {
+                const size_t existingBytes = existing->second->size;
+                const bool existingNormal = !existing->second->isVip;
+                shard.entries.erase(existing);
+                currentBytes_.fetch_sub(existingBytes, std::memory_order_relaxed);
+                if (existingNormal) {
+                    normalBytes_.fetch_sub(existingBytes,
+                                           std::memory_order_relaxed);
+                }
+            }
+            shard.entries[key] = std::move(entry);
+        }
+
+        currentBytes_.fetch_add(insertedBytes, std::memory_order_relaxed);
+        if (!isVip) {
+            normalBytes_.fetch_add(insertedBytes, std::memory_order_relaxed);
+        }
     }
 
-    // 检查从offset
-    // 开始，连续length字节的数据，是否已经足够安全(在缓存中或正在加载)
-    // 返回实际连续存在的字节数
     uintmax_t getContinuousCachedBytes(const std::string &filepath,
                                        uintmax_t startOffset, uintmax_t length,
-                                       uintmax_t chunkSize) {
-        std::lock_guard<std::mutex> lock(mutex_);
-        pruneExpiredLocked();
-
+                                       uintmax_t chunkSize) const {
         uintmax_t continuousBytes = 0;
         uintmax_t currentOffset = startOffset;
 
         while (continuousBytes < length) {
-            std::string key = filepath + "_" + std::to_string(currentOffset);
-            // 如果在缓存里，或者有别的线程正在读它，算作“安全”
-            if (entries_.count(key) > 0 || loadingKeys_.count(key) > 0) {
+            const std::string key =
+                filepath + "_" + std::to_string(currentOffset);
+            if (containsOrLoading(key)) {
                 continuousBytes += chunkSize;
                 currentOffset += chunkSize;
             } else {
-                break; // 遇到断层，停止检查
+                break;
             }
         }
         return continuousBytes;
@@ -164,116 +170,222 @@ class PrefetchCache {
 
   private:
     struct CacheEntry {
-        std::vector<char> data;
-        std::list<std::string>::iterator lruIt;
-        std::chrono::steady_clock::time_point lastAccess;
+        BufferPtr data;
+        size_t size = 0;
         bool isVip = false;
+        std::atomic<uint64_t> lastTouchNs{0};
     };
 
-    using EntryMap = std::unordered_map<std::string, CacheEntry>;
+    struct Shard {
+        mutable std::shared_mutex mutex;
+        std::unordered_map<std::string, std::shared_ptr<CacheEntry>> entries;
+        std::unordered_set<std::string> loadingKeys;
+    };
 
-    void removeEntryLocked(EntryMap::iterator it) {
-        currentBytes_ -= it->second.data.size();
-        if (!it->second.isVip) {
-            normalBytes_ -= it->second.data.size();
-        }
-        lruKeys_.erase(it->second.lruIt);
-        entries_.erase(it);
-        LOG_INFO << "Removed entry from cache, size: " << it->second.data.size()
-                 << ", isVip: " << it->second.isVip
-                 << ", currentBytes: " << currentBytes_
-                 << ", normalBytes: " << normalBytes_;
-    }
-
-    // 计算当前缓存里，所有普通用户数据的粽子结束
-    // 用于判断在缓存满载时，是否有足够的冷数据可以被驱逐
-    // 调用前必须持有锁
-    size_t evictableNormalBytesLocked() const {
-        size_t bytes = 0;
-        for (const auto &key : lruKeys_) {
-            auto it = entries_.find(key);
-            if (it != entries_.end() && !it->second.isVip) {
-                bytes += it->second.data.size();
-            }
-        }
-        LOG_DEBUG << "Evictable normal bytes: " << bytes;
-        return bytes;
-    }
-
-    // 惰性清理过期数据
-    // 遍历LRU链表尾部，如果其最后访问时间超过了TTL，则销毁
-    void pruneExpiredLocked() const {
-        auto *self = const_cast<PrefetchCache *>(this);
-        const auto now = std::chrono::steady_clock::now();
-        while (!self->lruKeys_.empty()) {
-            auto tailIt = std::prev(self->lruKeys_.end());
-            auto entryIt = self->entries_.find(*tailIt);
-            if (entryIt == self->entries_.end()) {
-                self->lruKeys_.erase(tailIt);
-                continue;
-            }
-
-            if (now - entryIt->second.lastAccess < kEntryTtl) {
-                break;
-            }
-            self->removeEntryLocked(entryIt);
-        }
-    }
-
-    // 带优先级隔离的 LRU 驱逐（仅针对普通用户）
-    // 当总容量触及硬上限，或普通用户容量触及软上限时触发
-    // 强制从LRU尾部扫描，仅驱逐普通用户数据
-    void evictNormalIfNeededLocked(size_t incomingBytes,
-                                   size_t normalSoftLimit) {
-        while (!lruKeys_.empty() &&
-               (currentBytes_ + incomingBytes > maxBytes_ ||
-                normalBytes_ + incomingBytes > normalSoftLimit)) {
-            bool removed = false;
-            for (auto it = lruKeys_.rbegin(); it != lruKeys_.rend(); ++it) {
-                auto entryIt = entries_.find(*it);
-                if (entryIt == entries_.end() || entryIt->second.isVip) {
-                    continue;
-                }
-                removeEntryLocked(entryIt);
-                removed = true;
-                break;
-            }
-            if (!removed) {
-                break;
-            }
-        }
-    }
-
-    // 全局无差别 LRU 驱逐（针对 VIP 用户）
-    // 当总容量触及硬上限时触发，直接从 LRU 尾部驱逐最老的数据
-    void evictIfNeededLocked(size_t incomingBytes) {
-        while (!lruKeys_.empty() && currentBytes_ + incomingBytes > maxBytes_) {
-            auto tailIt = std::prev(lruKeys_.end());
-            auto entryIt = entries_.find(*tailIt);
-            if (entryIt == entries_.end()) {
-                lruKeys_.erase(tailIt);
-                continue;
-            }
-            removeEntryLocked(entryIt);
-        }
-    }
-
-    // 把数据块移到LRU链表最前面
-    void touchLocked(EntryMap::iterator it) {
-        lruKeys_.erase(it->second.lruIt);
-        lruKeys_.push_front(it->first);
-        it->second.lruIt = lruKeys_.begin();
-        it->second.lastAccess = std::chrono::steady_clock::now();
-    }
-
+    static constexpr size_t kShardCount = 32;
     static constexpr size_t kVipReservedBytes = 100 * 1024 * 1024;
     static constexpr auto kEntryTtl = std::chrono::minutes(10);
+    static constexpr auto kMaintenanceInterval = std::chrono::seconds(5);
 
-    mutable std::mutex mutex_; // 全局互斥锁
+    static uint64_t nowNs() {
+        return static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now().time_since_epoch())
+                .count());
+    }
+
+    Shard &shardFor(const std::string &key) {
+        return shards_[std::hash<std::string>{}(key) % kShardCount];
+    }
+
+    const Shard &shardFor(const std::string &key) const {
+        return shards_[std::hash<std::string>{}(key) % kShardCount];
+    }
+
+    bool containsOrLoading(const std::string &key) const {
+        const auto &shard = shardFor(key);
+        std::shared_lock<std::shared_mutex> lock(shard.mutex);
+        return shard.entries.find(key) != shard.entries.end() ||
+               shard.loadingKeys.find(key) != shard.loadingKeys.end();
+    }
+
+    bool makeSpaceFor(size_t incomingBytes, bool isVip) {
+        std::lock_guard<std::mutex> guard(evictionMutex_);
+        while (true) {
+            const size_t current =
+                currentBytes_.load(std::memory_order_relaxed);
+            const size_t normal =
+                normalBytes_.load(std::memory_order_relaxed);
+            const size_t normalSoftLimit = maxBytes_ > kVipReservedBytes
+                                               ? (maxBytes_ - kVipReservedBytes)
+                                               : 0;
+
+            if (isVip) {
+                if (current + incomingBytes <= maxBytes_) {
+                    return true;
+                }
+                if (!evictOne(true)) {
+                    return false;
+                }
+                continue;
+            }
+
+            if (current + incomingBytes <= maxBytes_ &&
+                normal + incomingBytes <= normalSoftLimit) {
+                return true;
+            }
+
+            if (!evictOne(false)) {
+                return false;
+            }
+        }
+    }
+
+    bool evictOne(bool allowVipEviction) {
+        std::string victimKey;
+        size_t victimShardIndex = 0;
+        uint64_t oldestTouch = std::numeric_limits<uint64_t>::max();
+        bool victimFound = false;
+        bool victimIsVip = false;
+
+        std::shared_ptr<CacheEntry> bestNormal;
+        std::string bestNormalKey;
+        size_t bestNormalShard = 0;
+
+        std::shared_ptr<CacheEntry> bestAny;
+        std::string bestAnyKey;
+        size_t bestAnyShard = 0;
+
+        for (size_t i = 0; i < kShardCount; ++i) {
+            const auto &shard = shards_[i];
+            std::shared_lock<std::shared_mutex> lock(shard.mutex);
+            for (const auto &pair : shard.entries) {
+                const auto &entry = pair.second;
+                const uint64_t touch =
+                    entry->lastTouchNs.load(std::memory_order_relaxed);
+                if (!entry->isVip &&
+                    (!bestNormal || touch <
+                                        bestNormal->lastTouchNs.load(
+                                            std::memory_order_relaxed))) {
+                    bestNormal = entry;
+                    bestNormalKey = pair.first;
+                    bestNormalShard = i;
+                }
+                if (allowVipEviction &&
+                    (!bestAny || touch <
+                                    bestAny->lastTouchNs.load(
+                                        std::memory_order_relaxed))) {
+                    bestAny = entry;
+                    bestAnyKey = pair.first;
+                    bestAnyShard = i;
+                }
+            }
+        }
+
+        if (bestNormal) {
+            victimKey = bestNormalKey;
+            victimShardIndex = bestNormalShard;
+            oldestTouch =
+                bestNormal->lastTouchNs.load(std::memory_order_relaxed);
+            victimFound = true;
+            victimIsVip = false;
+        } else if (allowVipEviction && bestAny) {
+            victimKey = bestAnyKey;
+            victimShardIndex = bestAnyShard;
+            oldestTouch =
+                bestAny->lastTouchNs.load(std::memory_order_relaxed);
+            victimFound = true;
+            victimIsVip = bestAny->isVip;
+        }
+
+        if (!victimFound) {
+            return false;
+        }
+
+        auto &victimShard = shards_[victimShardIndex];
+        std::unique_lock<std::shared_mutex> lock(victimShard.mutex);
+        auto it = victimShard.entries.find(victimKey);
+        if (it == victimShard.entries.end()) {
+            return true;
+        }
+        if (!allowVipEviction && it->second->isVip) {
+            return true;
+        }
+        const uint64_t currentTouch =
+            it->second->lastTouchNs.load(std::memory_order_relaxed);
+        if (currentTouch != oldestTouch && victimIsVip == it->second->isVip) {
+            return true;
+        }
+
+        const size_t bytes = it->second->size;
+        const bool isNormal = !it->second->isVip;
+        victimShard.entries.erase(it);
+        currentBytes_.fetch_sub(bytes, std::memory_order_relaxed);
+        if (isNormal) {
+            normalBytes_.fetch_sub(bytes, std::memory_order_relaxed);
+        }
+        return true;
+    }
+
+    void maybePruneExpired() {
+        const uint64_t now = nowNs();
+        const uint64_t nextAllowed =
+            nextMaintenanceNs_.load(std::memory_order_relaxed);
+        if (now < nextAllowed) {
+            return;
+        }
+
+        std::lock_guard<std::mutex> guard(maintenanceMutex_);
+        if (now < nextMaintenanceNs_.load(std::memory_order_relaxed)) {
+            return;
+        }
+        pruneExpiredEntries(now);
+        nextMaintenanceNs_.store(
+            now + static_cast<uint64_t>(
+                      std::chrono::duration_cast<std::chrono::nanoseconds>(
+                          kMaintenanceInterval)
+                          .count()),
+            std::memory_order_relaxed);
+    }
+
+    void pruneExpiredEntries(uint64_t now) {
+        const uint64_t ttlNs = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(kEntryTtl)
+                .count());
+
+        for (auto &shard : shards_) {
+            std::vector<std::pair<size_t, bool>> removedEntries;
+            {
+                std::unique_lock<std::shared_mutex> lock(shard.mutex);
+                for (auto it = shard.entries.begin(); it != shard.entries.end();) {
+                    const uint64_t touch =
+                        it->second->lastTouchNs.load(std::memory_order_relaxed);
+                    if (now > touch && now - touch >= ttlNs) {
+                        removedEntries.push_back(
+                            {it->second->size, !it->second->isVip});
+                        it = shard.entries.erase(it);
+                    } else {
+                        ++it;
+                    }
+                }
+            }
+
+            for (const auto &removed : removedEntries) {
+                currentBytes_.fetch_sub(removed.first,
+                                        std::memory_order_relaxed);
+                if (removed.second) {
+                    normalBytes_.fetch_sub(removed.first,
+                                           std::memory_order_relaxed);
+                }
+            }
+        }
+    }
+
     size_t maxBytes_;
-    size_t currentBytes_ = 0;
-    size_t normalBytes_ = 0;
-    std::list<std::string> lruKeys_;              // LRU链表
-    EntryMap entries_;                            // 哈希表，存储实际缓存数据
-    std::unordered_set<std::string> loadingKeys_; // 正在加载的key
+    mutable std::array<Shard, kShardCount> shards_;
+    mutable std::mutex maintenanceMutex_;
+    mutable std::mutex evictionMutex_;
+    mutable std::atomic<uint64_t> nextMaintenanceNs_{0};
+    std::atomic<size_t> currentBytes_{0};
+    std::atomic<size_t> normalBytes_{0};
 };

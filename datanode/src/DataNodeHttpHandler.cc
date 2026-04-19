@@ -142,14 +142,18 @@ bool FileDownContext::readNextChunk(std::string &chunk) {
         return false;
     }
 
+    std::shared_ptr<const PrefetchCache::Buffer> cachedBuffer;
     std::vector<char> buffer;
     bool cacheHit = false;
 
     // 如果是学习场景，先去缓存里找找看
     if (shouldUsePrefetchCache()) {
-        cacheHit = prefetchCache_->get(buildCacheKey(currentPosition_), buffer);
-        if (cacheHit && buffer.size() > bytesToRead) {
-            buffer.resize(bytesToRead);
+        cacheHit =
+            prefetchCache_->get(buildCacheKey(currentPosition_), cachedBuffer);
+        if (cacheHit && cachedBuffer && cachedBuffer->size() > bytesToRead) {
+            chunk.assign(cachedBuffer->data(), bytesToRead);
+        } else if (cacheHit && cachedBuffer) {
+            chunk.assign(cachedBuffer->data(), cachedBuffer->size());
         }
     }
 
@@ -168,10 +172,10 @@ bool FileDownContext::readNextChunk(std::string &chunk) {
             prefetchCache_->put(buildCacheKey(currentPosition_), buffer,
                                 isVipUser());
         }
+        chunk.assign(buffer.data(), buffer.size());
     }
 
-    chunk.assign(buffer.data(), buffer.size());
-    currentPosition_ += buffer.size();
+    currentPosition_ += chunk.size();
     if (currentPosition_ >= fileSize_) {
         isComplete_ = true;
     }
@@ -179,13 +183,12 @@ bool FileDownContext::readNextChunk(std::string &chunk) {
     // 核心创新点：触发异步预取！
     // 如果是学习场景，不仅把当前这块发给用户，还调用线程池把后面的数据提前读出来！
     if (shouldUsePrefetchCache()) {
-        LOG_DEBUG << "start to schedule prefetch window";
         schedulePrefetchWindow(currentPosition_);
     }
 
-    LOG_INFO << (cacheHit ? "Prefetch cache hit" : "Disk read")
-             << ", bytes: " << buffer.size()
-             << ", current position: " << currentPosition_ << "/" << fileSize_;
+    LOG_DEBUG << (cacheHit ? "Prefetch cache hit" : "Disk read")
+              << ", bytes: " << chunk.size()
+              << ", current position: " << currentPosition_ << "/" << fileSize_;
     return true;
 }
 
@@ -238,10 +241,8 @@ void FileDownContext::schedulePrefetchWindow(uintmax_t nextOffset) {
 
     // 如果安全的数据量还高于低水位线，说明缓存充足，不需要唤醒后台线程
     if (safeBytes > lowWaterBytes) {
-        LOG_INFO << "Global cache is sufficient (safety margin:" << safeBytes
-                 << " > lowWater:" << lowWaterBytes << "), skip prefetch";
-        LOG_INFO << "CurrentOffset:" << nextOffset
-                 << "; Total:" << prefetchCache_->currentBytes();
+        LOG_INFO << "Global cache is sufficient, skip prefetch. safe_bytes="
+                 << safeBytes << ", low_water=" << lowWaterBytes;
         return;
     }
     // 确保线程池指针不为空
@@ -295,7 +296,7 @@ void FileDownContext::schedulePrefetchWindow(uintmax_t nextOffset) {
             offset += static_cast<uintmax_t>(readBytes);
             prefetchedBytes += static_cast<uintmax_t>(readBytes);
             LOG_INFO << "prefetched:" << prefetchedBytes
-                     << "bytes. Total:" << cache->currentBytes();
+                     << " bytes; total:" << cache->currentBytes() << " bytes";
         }
 
         ::close(fd);
@@ -305,7 +306,7 @@ void FileDownContext::schedulePrefetchWindow(uintmax_t nextOffset) {
 // --------------Handler--------------
 DataNodeHttpHandler::DataNodeHttpHandler(DataNode *datanode, int numThreads)
     : uploadDir_("uploads"), datanode_(datanode),
-      prefetchCache_(std::make_shared<PrefetchCache>(500 * 1024 * 1024)),
+      prefetchCache_(std::make_shared<PrefetchCache>(1000 * 1024 * 1024)),
       threadPool_("DNHttpHandlerThreadPool") {
     threadPool_.start(numThreads);
     // 创建上传目录
@@ -316,7 +317,8 @@ DataNodeHttpHandler::DataNodeHttpHandler(DataNode *datanode, int numThreads)
 
     // 初始化路由表
     initRoutes();
-    LOG_INFO << "Current prefetch bytes: " << prefetchCache_->currentBytes();
+    LOG_INFO << "Prefetch cache initialized, bytes="
+             << prefetchCache_->currentBytes();
 }
 
 DataNodeHttpHandler::~DataNodeHttpHandler() {}
