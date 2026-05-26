@@ -1,7 +1,7 @@
 #include "UserHandler.h"
 #include "NodeManager.h"
 #include "PasswordHash.h"
-#include "SceneProfileService.h"
+#include "SceneModeService.h"
 #include "base/Logging.h"
 #include "base/ThreadPool.h"
 #include "db/MySQLPool.h"
@@ -9,17 +9,28 @@
 #include "net/Callbacks.h"
 #include "net/HttpRequest.h"
 #include "net/HttpResponse.h"
+#include <algorithm>
+#include <chrono>
+#include <cctype>
+#include <iomanip>
 #include <mutex>
 #include <mysql/mysql.h>
 #include <nlohmann/json.hpp>
 #include <random>
+#include <sstream>
 #include <string>
 
 using json = nlohmann::json;
 
 namespace {
 std::string normalizeServiceLevel(const std::string &serviceLevel) {
-    return serviceLevel == "vip" ? "vip" : "normal";
+    if (serviceLevel == "svip") {
+        return "svip";
+    }
+    if (serviceLevel == "vip") {
+        return "vip";
+    }
+    return "normal";
 }
 
 std::string buildNodeAccessBaseUrl(const std::shared_ptr<DataNodeInfo> &node) {
@@ -28,12 +39,48 @@ std::string buildNodeAccessBaseUrl(const std::shared_ptr<DataNodeInfo> &node) {
     }
     return "http://" + node->addr_.toIpPort();
 }
+
+json buildWatermarkPolicy(const std::string &serviceLevel,
+                          const std::string &username,
+                          bool enabled = true) {
+    if (!enabled) {
+        return {{"mode", "none"}, {"text", ""}, {"label", "无水印"}};
+    }
+    if (serviceLevel == "svip") {
+        return {{"mode", "dynamic"},
+                {"text", username.empty() ? "SVIP" : username},
+                {"label", "用户名 + 时间戳动态水印"}};
+    }
+    return {{"mode", "none"}, {"text", ""}, {"label", "无水印"}};
+}
+
+bool isVideoFile(const std::string &filename) {
+    const auto pos = filename.find_last_of('.');
+    if (pos == std::string::npos || pos + 1 >= filename.size()) {
+        return false;
+    }
+    std::string ext = filename.substr(pos + 1);
+    std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+    return ext == "mp4" || ext == "avi" || ext == "mkv" || ext == "mov";
+}
+
+bool isImageFile(const std::string &filename) {
+    const auto pos = filename.find_last_of('.');
+    if (pos == std::string::npos || pos + 1 >= filename.size()) {
+        return false;
+    }
+    std::string ext = filename.substr(pos + 1);
+    std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+    return ext == "jpg" || ext == "jpeg" || ext == "png" || ext == "gif" ||
+           ext == "webp";
+}
 } // namespace
 
 UserHandler::UserHandler(fileserver::ThreadPool *threadPool)
     : threadPool_(threadPool) {
     ensureServiceLevelColumn();
-    SceneProfileService::instance().ensureSchema();
+    ensureAdminColumn();
+    SceneModeService::instance().ensureSchema();
 }
 
 void UserHandler::ensureServiceLevelColumn() {
@@ -73,6 +120,46 @@ void UserHandler::ensureServiceLevelColumn() {
         }
 
         LOG_INFO << "Added users.service_level column with default normal";
+    });
+}
+
+void UserHandler::ensureAdminColumn() {
+    static std::once_flag onceFlag;
+    std::call_once(onceFlag, []() {
+        auto mysql = db::MySQLPool::instance().getConnection();
+        if (!mysql) {
+            LOG_WARN << "Skip ensuring users.is_admin because DB connection is "
+                        "unavailable";
+            return;
+        }
+
+        std::string checkSql = "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS "
+                               "WHERE TABLE_SCHEMA = DATABASE() "
+                               "AND TABLE_NAME = 'users' "
+                               "AND COLUMN_NAME = 'is_admin' LIMIT 1";
+        db::MySQLStatement checkStmt(*mysql, checkSql);
+        if (!checkStmt.execute()) {
+            LOG_WARN << "Failed to inspect users.is_admin: "
+                     << checkStmt.getError();
+            return;
+        }
+
+        auto rs = checkStmt.getResultSet();
+        if (rs && rs->next()) {
+            return;
+        }
+
+        std::string alterSql =
+            "ALTER TABLE users ADD COLUMN is_admin TINYINT(1) NOT NULL "
+            "DEFAULT 0";
+        db::MySQLStatement alterStmt(*mysql, alterSql);
+        if (!alterStmt.execute()) {
+            LOG_WARN << "Failed to add users.is_admin: "
+                     << alterStmt.getError();
+            return;
+        }
+
+        LOG_INFO << "Added users.is_admin column with default 0";
     });
 }
 
@@ -264,7 +351,7 @@ bool UserHandler::handleLogin(const fn::TcpConnectionPtr &conn,
         }
 
         std::string querySql =
-            "SELECT id, username, password, service_level, scene_tag "
+            "SELECT id, username, password, service_level, scene_tag, is_admin "
             "FROM users WHERE username = ?";
         db::MySQLStatement stmt(*mysql, querySql);
 
@@ -297,7 +384,7 @@ bool UserHandler::handleLogin(const fn::TcpConnectionPtr &conn,
         std::string hashedPassword = rs->getString(2);
         std::string serviceLevel = normalizeServiceLevel(rs->getString(3));
         std::string sceneTag = rs->getString(4, "general");
-
+        bool isAdmin = rs->getInt(5) != 0;
         // bcrypt 验证密码 ---
         if (!PasswordHash::verify(password, hashedPassword)) {
             LOG_WARN << "Password verification failed for: " << username;
@@ -311,7 +398,8 @@ bool UserHandler::handleLogin(const fn::TcpConnectionPtr &conn,
 
         // 生成 JWT Token ---
         auto &tm = TokenManager::instance();
-        auto loginResult = tm.generateUserToken(userId, username, serviceLevel);
+        auto loginResult =
+            tm.generateUserToken(userId, username, serviceLevel, isAdmin);
         if (loginResult.token.empty()) {
             sendError(resp, "Token 生成失败",
                       fn::HttpResponse::k500InternalServerError, conn);
@@ -339,15 +427,12 @@ bool UserHandler::handleLogin(const fn::TcpConnectionPtr &conn,
                          {"expiresIn", 86400},
                          {"userId", userId},
                          {"username", username},
+                         {"isAdmin", isAdmin},
                          {"serviceLevel", serviceLevel},
                          {"sceneTag", sceneTag}};
         resp->setBody(response.dump());
         resp->addHeader("Content-Length",
                         std::to_string(response.dump().size()));
-
-        // 登录成功后异步刷新一次用户画像，避免阻塞当前请求。
-        SceneProfileService::instance().refreshUserSceneAsync(userId,
-                                                              threadPool_);
 
         return true;
 
@@ -397,6 +482,67 @@ bool UserHandler::handleLogout(const fn::TcpConnectionPtr &conn,
     resp->setBody(bodyStr);
     resp->addHeader("Content-Length", std::to_string(bodyStr.size()));
     return true;
+}
+
+bool UserHandler::handleUpdateSceneMode(
+    const fn::TcpConnectionPtr &conn, fn::HttpRequest &req,
+    std::shared_ptr<fn::HttpResponse> &resp) {
+    if (req.method() != fn::HttpRequest::kPost ||
+        req.path() != "/api/scene_mode") {
+        return false;
+    }
+
+    std::string authHeader = req.getHeader("Authorization");
+    if (authHeader.empty() || authHeader.find("Bearer ") != 0) {
+        sendError(resp, "Missing Authorization header",
+                  fn::HttpResponse::k401Unauthorized, conn);
+        return true;
+    }
+
+    const int userId =
+        TokenManager::instance().verifyUserToken(authHeader.substr(7));
+    if (userId < 0) {
+        sendError(resp, "Invalid token", fn::HttpResponse::k401Unauthorized,
+                  conn);
+        return true;
+    }
+
+    try {
+        json requestData = json::parse(req.body());
+        std::string sceneTag = requestData.value("sceneTag", "general");
+        if (sceneTag != "learning" && sceneTag != "development" &&
+            sceneTag != "entertainment") {
+            sceneTag = "general";
+        }
+
+        auto mysql = db::MySQLPool::instance().getConnection();
+        if (!mysql) {
+            sendError(resp, "数据库连接失败",
+                      fn::HttpResponse::k500InternalServerError, conn);
+            return true;
+        }
+
+        if (!SceneModeService::instance().updateUserSceneTag(*mysql, userId,
+                                                             sceneTag)) {
+            sendError(resp, "模式切换失败",
+                      fn::HttpResponse::k500InternalServerError, conn);
+            return true;
+        }
+
+        json response = {{"code", 0},
+                         {"message", "模式切换成功"},
+                         {"sceneTag", sceneTag}};
+        const std::string bodyStr = response.dump();
+        resp->setStatusCode(fn::HttpResponse::k200Ok);
+        resp->setContentType("application/json");
+        resp->setBody(bodyStr);
+        resp->addHeader("Content-Length", std::to_string(bodyStr.size()));
+        return true;
+    } catch (const std::exception &e) {
+        sendError(resp, "模式切换失败：" + std::string(e.what()),
+                  fn::HttpResponse::k400BadRequest, conn);
+        return true;
+    }
 }
 
 // 搜索用户
@@ -807,8 +953,9 @@ bool UserHandler::handleShareVerify(const fn::TcpConnectionPtr &conn,
         auto mysql = db::MySQLPool::instance().getConnection();
         std::string sql =
             "SELECT f.node_id, f.original_filename, f.filename, s.share_type, "
-            "s.extract_code "
+            "s.extract_code, u.service_level, u.username "
             "FROM file_shares s JOIN files f ON s.file_id = f.id "
+            "JOIN users u ON s.user_id = u.id "
             "WHERE s.share_id = ? AND (s.expire_time IS NULL OR s.expire_time "
             "> NOW()) AND f.is_deleted = 0";
 
@@ -828,6 +975,8 @@ bool UserHandler::handleShareVerify(const fn::TcpConnectionPtr &conn,
         std::string serverFilename = rs->getString(2);
         std::string shareType = rs->getString(3);
         std::string realCode = rs->getString(4);
+        const std::string ownerServiceLevel = rs->getString(5);
+        const std::string ownerUsername = rs->getString(6);
 
         // 验证提取码
         if (shareType == "protected" && extractCode != realCode) {
@@ -844,11 +993,14 @@ bool UserHandler::handleShareVerify(const fn::TcpConnectionPtr &conn,
             return true;
         }
 
-        // 🌟 核心：签发下载 Token (因为是外部人员，userId 传 0 即可，DataNode
-        // 只认 serverFilename)
+        const json watermark =
+            buildWatermarkPolicy(ownerServiceLevel, "", false);
+
         std::string downloadToken =
             TokenManager::instance().generateDownloadToken(
-                0, originalFilename, serverFilename, "general",
+                0, "guest", originalFilename, serverFilename, "general", "download",
+                "original", watermark.value("mode", "none"),
+                watermark.value("text", ""),
                 NodeManager::instance().buildQoSPolicy("normal", true));
 
         json response = {
@@ -856,7 +1008,10 @@ bool UserHandler::handleShareVerify(const fn::TcpConnectionPtr &conn,
             {"data",
              {{"downloadUrl", buildNodeAccessBaseUrl(nodeInfo) +
                                   "/api/datanode/download"},
-              {"token", downloadToken}}}};
+              {"token", downloadToken},
+              {"watermark", watermark},
+              {"isImage", isImageFile(originalFilename)},
+              {"isVideo", isVideoFile(originalFilename)}}}};
 
         std::string bodyStr = response.dump();
         resp->setStatusCode(fn::HttpResponse::k200Ok);

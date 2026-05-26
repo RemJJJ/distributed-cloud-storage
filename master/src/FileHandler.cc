@@ -2,7 +2,7 @@
 #include "AsyncDeleteTask.h"
 #include "HotCacheService.h"
 #include "NodeManager.h"
-#include "SceneProfileService.h"
+#include "SceneModeService.h"
 #include "StorageFeatureService.h"
 #include "TokenManager.h"
 #include "db/MySQLPool.h"
@@ -10,17 +10,237 @@
 #include "net/HttpResponse.h"
 #include "random"
 #include <algorithm>
+#include <cctype>
 #include <chrono>
+#include <mutex>
 #include <sstream>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace {
+std::string toLowerCopy(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return value;
+}
+
+std::string getExtensionLower(const std::string &filename) {
+    const auto pos = filename.find_last_of('.');
+    if (pos == std::string::npos || pos + 1 >= filename.size()) {
+        return "";
+    }
+    return toLowerCopy(filename.substr(pos + 1));
+}
+
+bool isVideoFile(const std::string &filename) {
+    const std::string ext = getExtensionLower(filename);
+    return ext == "mp4" || ext == "avi" || ext == "mkv" || ext == "mov";
+}
+
+std::string trimCopy(const std::string &value) {
+    const auto begin = std::find_if_not(
+        value.begin(), value.end(),
+        [](unsigned char c) { return std::isspace(c) != 0; });
+    const auto end = std::find_if_not(
+        value.rbegin(), value.rend(),
+        [](unsigned char c) { return std::isspace(c) != 0; })
+                         .base();
+    if (begin >= end) {
+        return "";
+    }
+    return std::string(begin, end);
+}
+
+void sendJsonResponse(const std::shared_ptr<fn::HttpResponse> &resp,
+                      const json &payload,
+                      fn::HttpResponse::HttpStatusCode status =
+                          fn::HttpResponse::k200Ok) {
+    const std::string body = payload.dump();
+    resp->setStatusCode(status);
+    resp->setContentType("application/json");
+    resp->setBody(body);
+    resp->addHeader("Content-Length", std::to_string(body.size()));
+}
+
+void ensureVideoNotesTable(db::MySQLPool::ConnectionGuard &mysql) {
+    db::MySQLStatement stmt(
+        mysql,
+        "CREATE TABLE IF NOT EXISTS video_notes ("
+        "id INT AUTO_INCREMENT PRIMARY KEY,"
+        "user_id INT NOT NULL,"
+        "file_id INT NOT NULL,"
+        "note_time_ms INT NOT NULL,"
+        "tag VARCHAR(64) NOT NULL DEFAULT '',"
+        "content TEXT NOT NULL,"
+        "created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,"
+        "updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE "
+        "CURRENT_TIMESTAMP,"
+        "INDEX idx_video_notes_user_file_time "
+        "(user_id, file_id, note_time_ms)"
+        ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+    if (!stmt.execute()) {
+        LOG_WARN << "Failed to ensure video_notes table: " << stmt.getError();
+    }
+}
+
+void ensureVideoLearningProgressTable(db::MySQLPool::ConnectionGuard &mysql) {
+    db::MySQLStatement stmt(
+        mysql,
+        "CREATE TABLE IF NOT EXISTS video_learning_progress ("
+        "id INT AUTO_INCREMENT PRIMARY KEY,"
+        "user_id INT NOT NULL,"
+        "file_id INT NOT NULL,"
+        "last_position_ms INT NOT NULL DEFAULT 0,"
+        "max_reached_ms INT NOT NULL DEFAULT 0,"
+        "duration_ms INT NOT NULL DEFAULT 0,"
+        "watched_ms INT NOT NULL DEFAULT 0,"
+        "updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE "
+        "CURRENT_TIMESTAMP,"
+        "UNIQUE KEY uq_video_learning_user_file (user_id, file_id),"
+        "INDEX idx_video_learning_user (user_id)"
+        ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+    if (!stmt.execute()) {
+        LOG_WARN << "Failed to ensure video_learning_progress table: "
+                 << stmt.getError();
+    }
+}
+
+void ensureVideoSegmentsTable(db::MySQLPool::ConnectionGuard &mysql) {
+    db::MySQLStatement stmt(
+        mysql,
+        "CREATE TABLE IF NOT EXISTS video_segments ("
+        "id INT AUTO_INCREMENT PRIMARY KEY,"
+        "user_id INT NOT NULL,"
+        "file_id INT NOT NULL,"
+        "start_time_ms INT NOT NULL,"
+        "end_time_ms INT NOT NULL,"
+        "tag VARCHAR(64) NOT NULL DEFAULT '',"
+        "content TEXT NOT NULL,"
+        "created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,"
+        "updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE "
+        "CURRENT_TIMESTAMP,"
+        "INDEX idx_video_segments_user_file_time "
+        "(user_id, file_id, start_time_ms)"
+        ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+    if (!stmt.execute()) {
+        LOG_WARN << "Failed to ensure video_segments table: "
+                 << stmt.getError();
+    }
+}
+
+void ensureStudyCollectionsTables(db::MySQLPool::ConnectionGuard &mysql) {
+    db::MySQLStatement collectionStmt(
+        mysql,
+        "CREATE TABLE IF NOT EXISTS study_collections ("
+        "id INT AUTO_INCREMENT PRIMARY KEY,"
+        "user_id INT NOT NULL,"
+        "title VARCHAR(128) NOT NULL,"
+        "description TEXT NOT NULL,"
+        "created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,"
+        "updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE "
+        "CURRENT_TIMESTAMP,"
+        "INDEX idx_study_collections_user (user_id, updated_at)"
+        ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+    if (!collectionStmt.execute()) {
+        LOG_WARN << "Failed to ensure study_collections table: "
+                 << collectionStmt.getError();
+    }
+
+    db::MySQLStatement itemStmt(
+        mysql,
+        "CREATE TABLE IF NOT EXISTS study_collection_items ("
+        "id INT AUTO_INCREMENT PRIMARY KEY,"
+        "collection_id INT NOT NULL,"
+        "user_id INT NOT NULL,"
+        "file_id INT NOT NULL,"
+        "sort_order INT NOT NULL DEFAULT 0,"
+        "status VARCHAR(16) NOT NULL DEFAULT 'todo',"
+        "tag VARCHAR(64) NOT NULL DEFAULT '',"
+        "note TEXT NOT NULL,"
+        "created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,"
+        "updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE "
+        "CURRENT_TIMESTAMP,"
+        "UNIQUE KEY uq_study_collection_file (collection_id, file_id),"
+        "INDEX idx_study_collection_items_collection "
+        "(collection_id, sort_order, id),"
+        "INDEX idx_study_collection_items_user (user_id)"
+        ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+    if (!itemStmt.execute()) {
+        LOG_WARN << "Failed to ensure study_collection_items table: "
+                 << itemStmt.getError();
+    }
+}
+
+void ensureLearningTables(db::MySQLPool::ConnectionGuard &mysql) {
+    ensureVideoNotesTable(mysql);
+    ensureVideoLearningProgressTable(mysql);
+    ensureVideoSegmentsTable(mysql);
+    ensureStudyCollectionsTables(mysql);
+}
+
+bool isImageFile(const std::string &filename) {
+    const std::string ext = getExtensionLower(filename);
+    return ext == "jpg" || ext == "jpeg" || ext == "png" || ext == "gif" ||
+           ext == "webp";
+}
+
+bool isPdfFile(const std::string &filename) {
+    return getExtensionLower(filename) == "pdf";
+}
+
+bool isEditableTextFile(const std::string &filename) {
+    const std::string ext = getExtensionLower(filename);
+    return ext == "cpp" || ext == "cc" || ext == "c" || ext == "h" ||
+           ext == "hpp" || ext == "py" || ext == "js" || ext == "json" ||
+           ext == "ts" || ext == "tsx" || ext == "java" || ext == "go" ||
+           ext == "rs" || ext == "txt" || ext == "md";
+}
+
+int getRecycleRetentionDays(const std::string &serviceLevel) {
+    if (serviceLevel == "svip") {
+        return 30;
+    }
+    if (serviceLevel == "vip") {
+        return 7;
+    }
+    return 2;
+}
+
+json buildWatermarkPolicy(const std::string &serviceLevel,
+                          const std::string &username,
+                          bool enabled = true) {
+    if (!enabled) {
+        return {{"mode", "none"}, {"text", ""}, {"label", "无水印"}};
+    }
+    if (serviceLevel == "svip") {
+        return {{"mode", "dynamic"},
+                {"text", username.empty() ? "SVIP" : username},
+                {"label", "用户名 + 时间戳动态水印"}};
+    }
+    return {{"mode", "none"}, {"text", ""}, {"label", "无水印"}};
+}
+
 std::string buildNodeAccessBaseUrl(const std::shared_ptr<DataNodeInfo> &node) {
     if (node && !node->publicUrl_.empty()) {
         return node->publicUrl_;
     }
     return "http://" + node->addr_.toIpPort();
+}
+
+std::string getUsernameByUserId(db::MySQLPool::ConnectionGuard &mysql,
+                                int userId) {
+    db::MySQLStatement stmt(mysql,
+                            "SELECT username FROM users WHERE id = ? LIMIT 1");
+    stmt.bindInt(userId);
+    if (!stmt.execute()) {
+        return "";
+    }
+    auto rs = stmt.getResultSet();
+    if (rs && rs->next()) {
+        return rs->getString(0);
+    }
+    return "";
 }
 
 int parsePositiveInt(const std::string &value, int defaultValue) {
@@ -36,6 +256,32 @@ int parsePositiveInt(const std::string &value, int defaultValue) {
 
 std::string toLikePattern(const std::string &keyword) {
     return "%" + keyword + "%";
+}
+
+std::string buildPlaceholders(size_t count) {
+    std::string sql;
+    for (size_t i = 0; i < count; ++i) {
+        sql += (i == 0 ? "?" : ",?");
+    }
+    return sql;
+}
+
+std::vector<int> parseIdArray(const json &value) {
+    std::vector<int> ids;
+    if (!value.is_array()) {
+        return ids;
+    }
+    for (const auto &item : value) {
+        if (item.is_number_integer()) {
+            int id = item.get<int>();
+            if (id > 0) {
+                ids.push_back(id);
+            }
+        }
+    }
+    std::sort(ids.begin(), ids.end());
+    ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
+    return ids;
 }
 
 std::string buildFileTypeFilterSql(const std::string &fileType) {
@@ -109,7 +355,11 @@ std::string buildStoredRelativePath(const std::string &folderPath,
 
 FileHandler::FileHandler() {
     StorageFeatureService::instance().ensureSchema();
-    SceneProfileService::instance().ensureSchema();
+    SceneModeService::instance().ensureSchema();
+    auto mysql = db::MySQLPool::instance().getConnection();
+    if (mysql) {
+        ensureLearningTables(*mysql);
+    }
 }
 
 bool FileHandler::handleListFiles(
@@ -153,9 +403,10 @@ bool FileHandler::handleListFiles(
                   fn::HttpResponse::k500InternalServerError, conn);
         return true;
     }
+    ensureLearningTables(*mysql);
     auto &storageService = StorageFeatureService::instance();
     std::string sceneTag =
-        SceneProfileService::instance().getUserSceneTag(*mysql, userId);
+        SceneModeService::instance().getUserSceneTag(*mysql, userId);
     auto storageSummary = storageService.getStorageSummary(*mysql, userId);
 
     if (folderId > 0 &&
@@ -178,10 +429,15 @@ bool FileHandler::handleListFiles(
         "SELECT f.id, f.filename, f.original_filename, f.file_size, "
         "f.created_at, COALESCE(f.folder_id, 0), f.relative_path, "
         "s.share_type, s.target_user_id, s.share_id, s.expire_time, "
-        "s.extract_code, u.username "
+        "s.extract_code, u.username, "
+        "COALESCE(vlp.last_position_ms, 0), "
+        "COALESCE(vlp.max_reached_ms, 0), "
+        "COALESCE(vlp.duration_ms, 0) "
         "FROM files f "
         "LEFT JOIN file_shares s ON f.id = s.file_id "
         "LEFT JOIN users u ON s.target_user_id = u.id "
+        "LEFT JOIN video_learning_progress vlp ON vlp.file_id = f.id "
+        "AND vlp.user_id = ? "
         "WHERE f.user_id = ? AND f.is_deleted = 0 AND f.status = 'success'";
 
     const bool ignoreFolderByType = !fileType.empty();
@@ -229,7 +485,8 @@ bool FileHandler::handleListFiles(
                   conn);
         return true;
     }
-    stmt.bindInt(userId);
+    stmt.bindInt(userId); // video_learning_progress.user_id
+    stmt.bindInt(userId); // files.user_id
     if (!keyword.empty()) {
         stmt.bindString(toLikePattern(keyword));
     }
@@ -269,6 +526,10 @@ bool FileHandler::handleListFiles(
         fileInfo["createdAt"] = rs->getString(4);
         fileInfo["folderId"] = rs->getInt(5);
         fileInfo["relativePath"] = rs->getString(6);
+        fileInfo["learningProgress"] = {
+            {"lastPositionMs", rs->getInt(13)},
+            {"maxReachedMs", rs->getInt(14)},
+            {"durationMs", rs->getInt(15)}};
 
         if (!rs->isNull(7)) {
             json shareInfo;
@@ -413,8 +674,9 @@ bool FileHandler::handleFileUpload(
         }
 
         const std::string serviceLevel = storageSummary.serviceLevel;
-        const std::string sceneTag =
-            SceneProfileService::instance().getUserSceneTag(*mysql, userId);
+        const std::string username = getUsernameByUserId(*mysql, userId);
+        std::string sceneTag =
+            SceneModeService::instance().getUserSceneTag(*mysql, userId);
         const bool batchMode = sceneTag == "development";
 
         int finalFolderId = storageService.ensureFolderPath(
@@ -577,7 +839,8 @@ bool FileHandler::handleFileUpload(
 
         // 生成专属token
         auto fileUploadResponse = TokenManager::instance().generateUploadToken(
-            userId, fileId, dataNode->id_, originalFilename, serverFilename,
+            userId, fileId, dataNode->id_, username, originalFilename,
+            serverFilename,
             currentTime, sceneTag, batchMode,
             NodeManager::instance().buildQoSPolicy(serviceLevel, false));
 
@@ -624,6 +887,10 @@ bool FileHandler::handleFileDownload(
     const fileserver::net::TcpConnectionPtr &conn,
     fileserver::net::HttpRequest &req,
     std::shared_ptr<fileserver::net::HttpResponse> &resp) { // 验证用户登录状态
+    std::string accessMode = req.getQuery("mode");
+    if (accessMode != "preview" && accessMode != "edit") {
+        accessMode = "download";
+    }
     std::string authHeader = req.getHeader("Authorization");
     if (authHeader.empty() || authHeader.substr(0, 7) != "Bearer ") {
         sendError(resp, "未授权的访问，请先登录",
@@ -652,18 +919,22 @@ bool FileHandler::handleFileDownload(
                   fn::HttpResponse::k500InternalServerError, conn);
         return true;
     }
+    ensureLearningTables(*mysql);
+    const std::string entertainmentRoomCode = req.getQuery("roomCode");
     std::string querySql =
-        "SELECT f.id, f.node_id, f.original_filename, f.file_size "
+        "SELECT f.id, f.node_id, f.original_filename, f.file_size, "
+        "f.user_id, owner.service_level, owner.username, "
+        "COALESCE(s.share_id, '') "
         "FROM files f "
+        "JOIN users owner ON f.user_id = owner.id "
         "LEFT JOIN file_shares s ON f.id = s.file_id AND s.share_type = "
         "'specific' AND s.target_user_id = ? "
         "WHERE f.filename = ? AND f.status = 'success' "
-        "AND (f.user_id = ? OR s.share_id IS NOT NULL) AND f.is_deleted = 0 "
+        "AND f.is_deleted = 0 "
         "LIMIT 1";
     db::MySQLStatement stmt(*mysql, querySql);
     stmt.bindInt(userId);            // 对应 s.target_user_id = ?
     stmt.bindString(serverFilename); // 对应 f.filename = ?
-    stmt.bindInt(userId);            // 对应 f.user_id = ?
 
     if (!stmt.execute()) {
         sendError(resp, "数据库错误", fn::HttpResponse::k500InternalServerError,
@@ -682,10 +953,120 @@ bool FileHandler::handleFileDownload(
     std::string nodeId = rs->getString(1);
     std::string original_filename = rs->getString(2);
     uintmax_t fileSize = rs->getInt64(3);
+    const int ownerUserId = rs->getInt(4);
+    const std::string ownerServiceLevel = rs->getString(5);
+    const std::string ownerUsername = rs->getString(6);
+    const std::string directShareId = rs->getString(7);
     std::string serviceLevel =
         StorageFeatureService::instance().getUserServiceLevel(*mysql, userId);
     std::string sceneTag =
-        SceneProfileService::instance().getUserSceneTag(*mysql, userId);
+        SceneModeService::instance().getUserSceneTag(*mysql, userId);
+    bool hasFileAccess = ownerUserId == userId || !directShareId.empty();
+    if (!hasFileAccess && !entertainmentRoomCode.empty() &&
+        (serviceLevel == "vip" || serviceLevel == "svip")) {
+        // 观影房房间码是一种临时授权：只允许访问该房间片单内的文件，且房间必须未过期。
+        db::MySQLStatement roomStmt(
+            *mysql,
+            "SELECT 1 FROM entertainment_rooms r "
+            "JOIN entertainment_playlist_items i ON i.playlist_id = r.playlist_id "
+            "WHERE r.room_code = ? AND r.expires_at > NOW() "
+            "AND i.file_id = ? LIMIT 1");
+        roomStmt.bindString(entertainmentRoomCode);
+        roomStmt.bindInt(fileId);
+        if (roomStmt.execute()) {
+            auto roomRs = roomStmt.getResultSet();
+            hasFileAccess = roomRs && roomRs->next();
+        }
+    }
+    if (!hasFileAccess) {
+        sendError(resp, "文件未找到或文件所有者已取消分享",
+                  fn::HttpResponse::k404NotFound, conn);
+        return true;
+    }
+    std::string username;
+    {
+        db::MySQLStatement userStmt(*mysql,
+                                    "SELECT username FROM users WHERE id = ? "
+                                    "LIMIT 1");
+        userStmt.bindInt(userId);
+        if (userStmt.execute()) {
+            auto userRs = userStmt.getResultSet();
+            if (userRs && userRs->next()) {
+                username = userRs->getString(0);
+            }
+        }
+    }
+
+    const bool videoFile = isVideoFile(original_filename);
+    const bool imageFile = isImageFile(original_filename);
+    const bool pdfFile = isPdfFile(original_filename);
+    const bool editableTextFile = isEditableTextFile(original_filename);
+    const bool canPreviewVideoByLevel =
+        serviceLevel == "vip" || serviceLevel == "svip";
+    const bool isOwner = ownerUserId == userId;
+    const bool previewWatermarkTarget = videoFile || imageFile || pdfFile;
+    int progressLastPositionMs = 0;
+    int progressMaxReachedMs = 0;
+    int progressDurationMs = 0;
+    if (videoFile) {
+        db::MySQLStatement progressStmt(
+            *mysql,
+            "SELECT last_position_ms, max_reached_ms, duration_ms "
+            "FROM video_learning_progress "
+            "WHERE user_id = ? AND file_id = ? LIMIT 1");
+        progressStmt.bindInt(userId);
+        progressStmt.bindInt(fileId);
+        if (progressStmt.execute()) {
+            auto progressRs = progressStmt.getResultSet();
+            if (progressRs && progressRs->next()) {
+                progressLastPositionMs = progressRs->getInt(0);
+                progressMaxReachedMs = progressRs->getInt(1);
+                progressDurationMs = progressRs->getInt(2);
+            }
+        }
+    }
+
+    if (accessMode == "preview") {
+        if (videoFile) {
+            if (!canPreviewVideoByLevel) {
+                sendError(resp, "当前用户等级不支持视频预览",
+                          fn::HttpResponse::k403Forbidden, conn);
+                return true;
+            }
+        } else if (!(imageFile || pdfFile || editableTextFile)) {
+            sendError(resp, "该文件类型暂不支持在线预览",
+                      fn::HttpResponse::k400BadRequest, conn);
+            return true;
+        }
+
+        if (editableTextFile && sceneTag != "development") {
+            sendError(resp, "当前用户不支持文本在线预览",
+                      fn::HttpResponse::k403Forbidden, conn);
+            return true;
+        }
+    } else if (accessMode == "edit") {
+        if ((serviceLevel != "vip" && serviceLevel != "svip") ||
+            !editableTextFile ||
+            sceneTag != "development") {
+            sendError(resp, "当前用户不支持在线编辑该文件",
+                      fn::HttpResponse::k403Forbidden, conn);
+            return true;
+        }
+    }
+
+    const std::string resolvedQuality = "original";
+    const bool enableWatermark =
+        accessMode == "preview" && previewWatermarkTarget &&
+        ownerServiceLevel == "svip";
+
+    const std::string watermarkIdentity =
+        ownerServiceLevel == "svip"
+            ? (ownerUsername.empty() ? std::string("SVIP")
+                                     : ownerUsername + " " +
+                                           getCurrentTimeStr())
+            : ownerUsername;
+    json watermark = buildWatermarkPolicy(ownerServiceLevel, watermarkIdentity,
+                                          enableWatermark);
 
     // 获取 DataNode 地址
     LOG_DEBUG << "nodeId: " << nodeId;
@@ -695,12 +1076,13 @@ bool FileHandler::handleFileDownload(
                   fn::HttpResponse::k500InternalServerError, conn);
         return true;
     }
-    SceneProfileService::instance().incrementDownloadCount(*mysql, fileId);
     // 每次下载记录一次
     HotCacheService::instance().recordAccess(fileId, nodeId, serverFilename,
                                              fileSize, serviceLevel, sceneTag);
     auto fileResponse = TokenManager::instance().generateDownloadToken(
-        userId, original_filename, serverFilename, sceneTag,
+        userId, username, original_filename, serverFilename, sceneTag, accessMode,
+        resolvedQuality, watermark.value("mode", "none"),
+        watermark.value("text", ""),
         NodeManager::instance().buildQoSPolicy(serviceLevel, true));
 
     // 返回 DataNode 播放地址
@@ -710,14 +1092,1150 @@ bool FileHandler::handleFileDownload(
                                            "/api/datanode/download"},
                        {"previewUrl", buildNodeAccessBaseUrl(nodeInfo) +
                                           "/api/datanode/text_preview"},
+                       {"editUrl", buildNodeAccessBaseUrl(nodeInfo) +
+                                       "/api/datanode/text_edit"},
+                       {"snapshotUrl", buildNodeAccessBaseUrl(nodeInfo) +
+                                           "/api/datanode/text_snapshot"},
+                       {"rollbackUrl", buildNodeAccessBaseUrl(nodeInfo) +
+                                           "/api/datanode/text_rollback"},
+                       {"experimentUrl", buildNodeAccessBaseUrl(nodeInfo) +
+                                             "/api/datanode/text_experiment"},
                        {"token", fileResponse},
                        {"fileSize", fileSize}}}};
+    response["data"]["accessMode"] = accessMode;
+    response["data"]["videoQuality"] = resolvedQuality;
+    response["data"]["availableQualities"] = json::array();
+    response["data"]["serviceLevel"] = serviceLevel;
+    response["data"]["watermark"] = watermark;
+    response["data"]["isOwner"] = isOwner;
+    response["data"]["isVideo"] = videoFile;
+    response["data"]["isImage"] = imageFile;
+    response["data"]["isPdf"] = pdfFile;
+    response["data"]["isEditableText"] = editableTextFile;
+    response["data"]["learningProgress"] = {
+        {"lastPositionMs", progressLastPositionMs},
+        {"maxReachedMs", progressMaxReachedMs},
+        {"durationMs", progressDurationMs}};
 
     resp->setStatusCode(fn::HttpResponse::k200Ok);
     std::string respBody = response.dump();
     resp->setBody(respBody);
     resp->addHeader("Content-Length", std::to_string(respBody.size()));
     return true;
+}
+
+bool FileHandler::handleListVideoNotes(
+    const fileserver::net::TcpConnectionPtr &conn,
+    fileserver::net::HttpRequest &req,
+    std::shared_ptr<fileserver::net::HttpResponse> &resp) {
+    if (req.method() != fn::HttpRequest::kGet ||
+        req.path() != "/api/video_notes") {
+        return false;
+    }
+
+    const std::string authHeader = req.getHeader("Authorization");
+    if (authHeader.empty() || authHeader.find("Bearer ") != 0) {
+        sendError(resp, "未授权的访问，请先登录",
+                  fn::HttpResponse::k401Unauthorized, conn);
+        return true;
+    }
+
+    const int userId =
+        TokenManager::instance().verifyUserToken(authHeader.substr(7));
+    if (userId < 0) {
+        sendError(resp, "Token 无效或已过期，请重新登录",
+                  fn::HttpResponse::k401Unauthorized, conn);
+        return true;
+    }
+
+    const std::string serverFilename = urlDecode(req.getQuery("filename"));
+    if (serverFilename.empty()) {
+        sendError(resp, "文件名不能为空", fn::HttpResponse::k400BadRequest,
+                  conn);
+        return true;
+    }
+
+    auto mysql = db::MySQLPool::instance().getConnection();
+    if (!mysql) {
+        sendError(resp, "数据库连接失败",
+                  fn::HttpResponse::k500InternalServerError, conn);
+        return true;
+    }
+    ensureVideoNotesTable(*mysql);
+
+    const std::string serviceLevel =
+        StorageFeatureService::instance().getUserServiceLevel(*mysql, userId);
+    std::string sceneTag =
+        SceneModeService::instance().getUserSceneTag(*mysql, userId);
+    if (serviceLevel != "svip" || sceneTag != "learning") {
+        sendError(resp, "视频时间戳笔记仅学习模式下的 SVIP 用户可用",
+                  fn::HttpResponse::k403Forbidden, conn);
+        return true;
+    }
+
+    db::MySQLStatement fileStmt(
+        *mysql,
+        "SELECT f.id, f.original_filename "
+        "FROM files f "
+        "LEFT JOIN file_shares s ON f.id = s.file_id AND s.share_type = "
+        "'specific' AND s.target_user_id = ? "
+        "WHERE f.filename = ? AND f.status = 'success' AND f.is_deleted = 0 "
+        "AND (f.user_id = ? OR s.share_id IS NOT NULL) "
+        "LIMIT 1");
+    fileStmt.bindInt(userId);
+    fileStmt.bindString(serverFilename);
+    fileStmt.bindInt(userId);
+    if (!fileStmt.execute()) {
+        sendError(resp, "数据库错误", fn::HttpResponse::k500InternalServerError,
+                  conn);
+        return true;
+    }
+
+    auto fileRs = fileStmt.getResultSet();
+    if (!fileRs || !fileRs->next()) {
+        sendError(resp, "文件未找到或无权访问",
+                  fn::HttpResponse::k404NotFound, conn);
+        return true;
+    }
+
+    const int fileId = fileRs->getInt(0);
+    const std::string originalFilename = fileRs->getString(1);
+    if (!isVideoFile(originalFilename)) {
+        sendError(resp, "该文件不是视频文件", fn::HttpResponse::k400BadRequest,
+                  conn);
+        return true;
+    }
+
+    db::MySQLStatement noteStmt(
+        *mysql,
+        "SELECT id, note_time_ms, tag, content, created_at, updated_at "
+        "FROM video_notes "
+        "WHERE user_id = ? AND file_id = ? "
+        "ORDER BY note_time_ms ASC, id ASC");
+    noteStmt.bindInt(userId);
+    noteStmt.bindInt(fileId);
+    if (!noteStmt.execute()) {
+        sendError(resp, "查询笔记失败",
+                  fn::HttpResponse::k500InternalServerError, conn);
+        return true;
+    }
+
+    json notes = json::array();
+    auto noteRs = noteStmt.getResultSet();
+    while (noteRs && noteRs->next()) {
+        notes.push_back({{"id", noteRs->getInt(0)},
+                         {"timeMs", noteRs->getInt(1)},
+                         {"tag", noteRs->getString(2)},
+                         {"content", noteRs->getString(3)},
+                         {"createdAt", noteRs->getString(4)},
+                         {"updatedAt", noteRs->getString(5)}});
+    }
+
+    sendJsonResponse(resp, {{"code", 0}, {"notes", notes}});
+    return true;
+}
+
+bool FileHandler::handleCreateVideoNote(
+    const fileserver::net::TcpConnectionPtr &conn,
+    fileserver::net::HttpRequest &req,
+    std::shared_ptr<fileserver::net::HttpResponse> &resp) {
+    if (req.method() != fn::HttpRequest::kPost ||
+        req.path() != "/api/video_notes") {
+        return false;
+    }
+
+    const std::string authHeader = req.getHeader("Authorization");
+    if (authHeader.empty() || authHeader.find("Bearer ") != 0) {
+        sendError(resp, "未授权的访问，请先登录",
+                  fn::HttpResponse::k401Unauthorized, conn);
+        return true;
+    }
+
+    const int userId =
+        TokenManager::instance().verifyUserToken(authHeader.substr(7));
+    if (userId < 0) {
+        sendError(resp, "Token 无效或已过期，请重新登录",
+                  fn::HttpResponse::k401Unauthorized, conn);
+        return true;
+    }
+
+    auto mysql = db::MySQLPool::instance().getConnection();
+    if (!mysql) {
+        sendError(resp, "数据库连接失败",
+                  fn::HttpResponse::k500InternalServerError, conn);
+        return true;
+    }
+    ensureVideoNotesTable(*mysql);
+
+    const std::string serviceLevel =
+        StorageFeatureService::instance().getUserServiceLevel(*mysql, userId);
+    std::string sceneTag =
+        SceneModeService::instance().getUserSceneTag(*mysql, userId);
+    if (serviceLevel != "svip" || sceneTag != "learning") {
+        sendError(resp, "视频时间戳笔记仅学习模式下的 SVIP 用户可用",
+                  fn::HttpResponse::k403Forbidden, conn);
+        return true;
+    }
+
+    try {
+        const json body = json::parse(req.body());
+        const std::string serverFilename =
+            trimCopy(body.value("filename", ""));
+        const int timeMs = body.value("timeMs", -1);
+        const std::string tag = trimCopy(body.value("tag", ""));
+        const std::string content = trimCopy(body.value("content", ""));
+
+        if (serverFilename.empty() || timeMs < 0) {
+            sendError(resp, "笔记参数不完整", fn::HttpResponse::k400BadRequest,
+                      conn);
+            return true;
+        }
+        if (tag.size() > 64) {
+            sendError(resp, "笔记标签不能超过64个字符",
+                      fn::HttpResponse::k400BadRequest, conn);
+            return true;
+        }
+        if (content.empty() || content.size() > 5000) {
+            sendError(resp, "笔记内容不能为空且不能超过5000字符",
+                      fn::HttpResponse::k400BadRequest, conn);
+            return true;
+        }
+
+        db::MySQLStatement fileStmt(
+            *mysql,
+            "SELECT f.id, f.original_filename "
+            "FROM files f "
+            "LEFT JOIN file_shares s ON f.id = s.file_id AND s.share_type = "
+            "'specific' AND s.target_user_id = ? "
+            "WHERE f.filename = ? AND f.status = 'success' "
+            "AND f.is_deleted = 0 "
+            "AND (f.user_id = ? OR s.share_id IS NOT NULL) "
+            "LIMIT 1");
+        fileStmt.bindInt(userId);
+        fileStmt.bindString(serverFilename);
+        fileStmt.bindInt(userId);
+        if (!fileStmt.execute()) {
+            sendError(resp, "数据库错误",
+                      fn::HttpResponse::k500InternalServerError, conn);
+            return true;
+        }
+
+        auto fileRs = fileStmt.getResultSet();
+        if (!fileRs || !fileRs->next()) {
+            sendError(resp, "文件未找到或无权访问",
+                      fn::HttpResponse::k404NotFound, conn);
+            return true;
+        }
+
+        const int fileId = fileRs->getInt(0);
+        const std::string originalFilename = fileRs->getString(1);
+        if (!isVideoFile(originalFilename)) {
+            sendError(resp, "该文件不是视频文件",
+                      fn::HttpResponse::k400BadRequest, conn);
+            return true;
+        }
+
+        // 每条笔记绑定当前用户和当前视频文件。note_time_ms 用毫秒保存，
+        // 这样跳转时不会因为浮点秒数四舍五入造成明显偏移。
+        db::MySQLStatement insertStmt(
+            *mysql,
+            "INSERT INTO video_notes "
+            "(user_id, file_id, note_time_ms, tag, content) "
+            "VALUES (?, ?, ?, ?, ?)");
+        insertStmt.bindInt(userId);
+        insertStmt.bindInt(fileId);
+        insertStmt.bindInt(timeMs);
+        insertStmt.bindString(tag);
+        insertStmt.bindString(content);
+        if (!insertStmt.execute()) {
+            sendError(resp, "保存笔记失败",
+                      fn::HttpResponse::k500InternalServerError, conn);
+            return true;
+        }
+
+        const int noteId = static_cast<int>(insertStmt.insertId());
+        sendJsonResponse(resp,
+                         {{"code", 0},
+                          {"message", "笔记已保存"},
+                          {"note",
+                           {{"id", noteId},
+                            {"timeMs", timeMs},
+                            {"tag", tag},
+                            {"content", content}}}});
+        return true;
+    } catch (const std::exception &e) {
+        sendError(resp, "保存笔记失败：" + std::string(e.what()),
+                  fn::HttpResponse::k400BadRequest, conn);
+        return true;
+    }
+}
+
+bool FileHandler::handleListVideoSegments(
+    const fileserver::net::TcpConnectionPtr &conn,
+    fileserver::net::HttpRequest &req,
+    std::shared_ptr<fileserver::net::HttpResponse> &resp) {
+    if (req.method() != fn::HttpRequest::kGet ||
+        req.path() != "/api/video_segments") {
+        return false;
+    }
+
+    const std::string authHeader = req.getHeader("Authorization");
+    if (authHeader.empty() || authHeader.find("Bearer ") != 0) {
+        sendError(resp, "未授权的访问，请先登录",
+                  fn::HttpResponse::k401Unauthorized, conn);
+        return true;
+    }
+
+    const int userId =
+        TokenManager::instance().verifyUserToken(authHeader.substr(7));
+    if (userId < 0) {
+        sendError(resp, "Token 无效或已过期，请重新登录",
+                  fn::HttpResponse::k401Unauthorized, conn);
+        return true;
+    }
+
+    const std::string serverFilename = urlDecode(req.getQuery("filename"));
+    if (serverFilename.empty()) {
+        sendError(resp, "文件名不能为空", fn::HttpResponse::k400BadRequest,
+                  conn);
+        return true;
+    }
+
+    auto mysql = db::MySQLPool::instance().getConnection();
+    if (!mysql) {
+        sendError(resp, "数据库连接失败",
+                  fn::HttpResponse::k500InternalServerError, conn);
+        return true;
+    }
+    ensureVideoSegmentsTable(*mysql);
+
+    const std::string serviceLevel =
+        StorageFeatureService::instance().getUserServiceLevel(*mysql, userId);
+    std::string sceneTag =
+        SceneModeService::instance().getUserSceneTag(*mysql, userId);
+    if (serviceLevel != "svip" || sceneTag != "learning") {
+        sendError(resp, "学习片段包仅学习模式下的 SVIP 用户可用",
+                  fn::HttpResponse::k403Forbidden, conn);
+        return true;
+    }
+
+    db::MySQLStatement fileStmt(
+        *mysql,
+        "SELECT f.id, f.original_filename "
+        "FROM files f "
+        "LEFT JOIN file_shares s ON f.id = s.file_id AND s.share_type = "
+        "'specific' AND s.target_user_id = ? "
+        "WHERE f.filename = ? AND f.status = 'success' AND f.is_deleted = 0 "
+        "AND (f.user_id = ? OR s.share_id IS NOT NULL) "
+        "LIMIT 1");
+    fileStmt.bindInt(userId);
+    fileStmt.bindString(serverFilename);
+    fileStmt.bindInt(userId);
+    if (!fileStmt.execute()) {
+        sendError(resp, "数据库错误", fn::HttpResponse::k500InternalServerError,
+                  conn);
+        return true;
+    }
+    auto fileRs = fileStmt.getResultSet();
+    if (!fileRs || !fileRs->next()) {
+        sendError(resp, "文件未找到或无权访问",
+                  fn::HttpResponse::k404NotFound, conn);
+        return true;
+    }
+
+    const int fileId = fileRs->getInt(0);
+    const std::string originalFilename = fileRs->getString(1);
+    if (!isVideoFile(originalFilename)) {
+        sendError(resp, "该文件不是视频文件", fn::HttpResponse::k400BadRequest,
+                  conn);
+        return true;
+    }
+
+    db::MySQLStatement segmentStmt(
+        *mysql,
+        "SELECT id, start_time_ms, end_time_ms, tag, content, created_at, "
+        "updated_at FROM video_segments "
+        "WHERE user_id = ? AND file_id = ? "
+        "ORDER BY start_time_ms ASC, id ASC");
+    segmentStmt.bindInt(userId);
+    segmentStmt.bindInt(fileId);
+    if (!segmentStmt.execute()) {
+        sendError(resp, "查询学习片段失败",
+                  fn::HttpResponse::k500InternalServerError, conn);
+        return true;
+    }
+
+    json segments = json::array();
+    auto rs = segmentStmt.getResultSet();
+    while (rs && rs->next()) {
+        segments.push_back({{"id", rs->getInt(0)},
+                            {"startMs", rs->getInt(1)},
+                            {"endMs", rs->getInt(2)},
+                            {"tag", rs->getString(3)},
+                            {"content", rs->getString(4)},
+                            {"createdAt", rs->getString(5)},
+                            {"updatedAt", rs->getString(6)}});
+    }
+
+    sendJsonResponse(resp, {{"code", 0}, {"segments", segments}});
+    return true;
+}
+
+bool FileHandler::handleCreateVideoSegment(
+    const fileserver::net::TcpConnectionPtr &conn,
+    fileserver::net::HttpRequest &req,
+    std::shared_ptr<fileserver::net::HttpResponse> &resp) {
+    if (req.method() != fn::HttpRequest::kPost ||
+        req.path() != "/api/video_segments") {
+        return false;
+    }
+
+    const std::string authHeader = req.getHeader("Authorization");
+    if (authHeader.empty() || authHeader.find("Bearer ") != 0) {
+        sendError(resp, "未授权的访问，请先登录",
+                  fn::HttpResponse::k401Unauthorized, conn);
+        return true;
+    }
+    const int userId =
+        TokenManager::instance().verifyUserToken(authHeader.substr(7));
+    if (userId < 0) {
+        sendError(resp, "Token 无效或已过期，请重新登录",
+                  fn::HttpResponse::k401Unauthorized, conn);
+        return true;
+    }
+
+    auto mysql = db::MySQLPool::instance().getConnection();
+    if (!mysql) {
+        sendError(resp, "数据库连接失败",
+                  fn::HttpResponse::k500InternalServerError, conn);
+        return true;
+    }
+    ensureVideoSegmentsTable(*mysql);
+
+    const std::string serviceLevel =
+        StorageFeatureService::instance().getUserServiceLevel(*mysql, userId);
+    std::string sceneTag =
+        SceneModeService::instance().getUserSceneTag(*mysql, userId);
+    if (serviceLevel != "svip" || sceneTag != "learning") {
+        sendError(resp, "学习片段包仅学习模式下的 SVIP 用户可用",
+                  fn::HttpResponse::k403Forbidden, conn);
+        return true;
+    }
+
+    try {
+        const json body = json::parse(req.body());
+        const std::string serverFilename =
+            trimCopy(body.value("filename", ""));
+        int startMs = body.value("startMs", -1);
+        int endMs = body.value("endMs", -1);
+        const std::string tag = trimCopy(body.value("tag", ""));
+        const std::string content = trimCopy(body.value("content", ""));
+
+        if (serverFilename.empty() || startMs < 0 || endMs <= startMs) {
+            sendError(resp, "学习片段参数不完整或时间范围非法",
+                      fn::HttpResponse::k400BadRequest, conn);
+            return true;
+        }
+        if (tag.size() > 64) {
+            sendError(resp, "片段标签不能超过64个字符",
+                      fn::HttpResponse::k400BadRequest, conn);
+            return true;
+        }
+        if (content.empty() || content.size() > 5000) {
+            sendError(resp, "片段说明不能为空且不能超过5000字符",
+                      fn::HttpResponse::k400BadRequest, conn);
+            return true;
+        }
+
+        db::MySQLStatement fileStmt(
+            *mysql,
+            "SELECT f.id, f.original_filename "
+            "FROM files f "
+            "LEFT JOIN file_shares s ON f.id = s.file_id AND s.share_type = "
+            "'specific' AND s.target_user_id = ? "
+            "WHERE f.filename = ? AND f.status = 'success' "
+            "AND f.is_deleted = 0 "
+            "AND (f.user_id = ? OR s.share_id IS NOT NULL) "
+            "LIMIT 1");
+        fileStmt.bindInt(userId);
+        fileStmt.bindString(serverFilename);
+        fileStmt.bindInt(userId);
+        if (!fileStmt.execute()) {
+            sendError(resp, "数据库错误",
+                      fn::HttpResponse::k500InternalServerError, conn);
+            return true;
+        }
+
+        auto fileRs = fileStmt.getResultSet();
+        if (!fileRs || !fileRs->next()) {
+            sendError(resp, "文件未找到或无权访问",
+                      fn::HttpResponse::k404NotFound, conn);
+            return true;
+        }
+        const int fileId = fileRs->getInt(0);
+        const std::string originalFilename = fileRs->getString(1);
+        if (!isVideoFile(originalFilename)) {
+            sendError(resp, "该文件不是视频文件",
+                      fn::HttpResponse::k400BadRequest, conn);
+            return true;
+        }
+
+        db::MySQLStatement insertStmt(
+            *mysql,
+            "INSERT INTO video_segments "
+            "(user_id, file_id, start_time_ms, end_time_ms, tag, content) "
+            "VALUES (?, ?, ?, ?, ?, ?)");
+        insertStmt.bindInt(userId);
+        insertStmt.bindInt(fileId);
+        insertStmt.bindInt(startMs);
+        insertStmt.bindInt(endMs);
+        insertStmt.bindString(tag);
+        insertStmt.bindString(content);
+        if (!insertStmt.execute()) {
+            sendError(resp, "保存学习片段失败",
+                      fn::HttpResponse::k500InternalServerError, conn);
+            return true;
+        }
+
+        const int segmentId = static_cast<int>(insertStmt.insertId());
+        sendJsonResponse(resp,
+                         {{"code", 0},
+                          {"message", "学习片段已保存"},
+                          {"segment",
+                           {{"id", segmentId},
+                            {"startMs", startMs},
+                            {"endMs", endMs},
+                            {"tag", tag},
+                            {"content", content}}}});
+        return true;
+    } catch (const std::exception &e) {
+        sendError(resp, "保存学习片段失败：" + std::string(e.what()),
+                  fn::HttpResponse::k400BadRequest, conn);
+        return true;
+    }
+}
+
+bool FileHandler::handleDeleteVideoSegment(
+    const fileserver::net::TcpConnectionPtr &conn,
+    fileserver::net::HttpRequest &req,
+    std::shared_ptr<fileserver::net::HttpResponse> &resp) {
+    if (req.method() != fn::HttpRequest::kDelete ||
+        req.path() != "/api/video_segments") {
+        return false;
+    }
+
+    const std::string authHeader = req.getHeader("Authorization");
+    if (authHeader.empty() || authHeader.find("Bearer ") != 0) {
+        sendError(resp, "未授权的访问，请先登录",
+                  fn::HttpResponse::k401Unauthorized, conn);
+        return true;
+    }
+    const int userId =
+        TokenManager::instance().verifyUserToken(authHeader.substr(7));
+    if (userId < 0) {
+        sendError(resp, "Token 无效或已过期，请重新登录",
+                  fn::HttpResponse::k401Unauthorized, conn);
+        return true;
+    }
+
+    int segmentId = 0;
+    try {
+        segmentId = std::stoi(req.getQuery("id"));
+    } catch (...) {
+        segmentId = 0;
+    }
+    if (segmentId <= 0) {
+        sendError(resp, "学习片段 ID 非法", fn::HttpResponse::k400BadRequest,
+                  conn);
+        return true;
+    }
+
+    auto mysql = db::MySQLPool::instance().getConnection();
+    if (!mysql) {
+        sendError(resp, "数据库连接失败",
+                  fn::HttpResponse::k500InternalServerError, conn);
+        return true;
+    }
+    ensureVideoSegmentsTable(*mysql);
+
+    db::MySQLStatement delStmt(
+        *mysql, "DELETE FROM video_segments WHERE id = ? AND user_id = ?");
+    delStmt.bindInt(segmentId);
+    delStmt.bindInt(userId);
+    if (!delStmt.execute()) {
+        sendError(resp, "删除学习片段失败",
+                  fn::HttpResponse::k500InternalServerError, conn);
+        return true;
+    }
+    sendJsonResponse(resp, {{"code", 0}, {"message", "学习片段已删除"}});
+    return true;
+}
+
+bool FileHandler::handleListStudyCollections(
+    const fileserver::net::TcpConnectionPtr &conn,
+    fileserver::net::HttpRequest &req,
+    std::shared_ptr<fileserver::net::HttpResponse> &resp) {
+    if (req.method() != fn::HttpRequest::kGet ||
+        req.path() != "/api/study_collections") {
+        return false;
+    }
+
+    const std::string authHeader = req.getHeader("Authorization");
+    if (authHeader.empty() || authHeader.find("Bearer ") != 0) {
+        sendError(resp, "未授权的访问，请先登录",
+                  fn::HttpResponse::k401Unauthorized, conn);
+        return true;
+    }
+    const int userId =
+        TokenManager::instance().verifyUserToken(authHeader.substr(7));
+    if (userId < 0) {
+        sendError(resp, "Token 无效或已过期，请重新登录",
+                  fn::HttpResponse::k401Unauthorized, conn);
+        return true;
+    }
+
+    auto mysql = db::MySQLPool::instance().getConnection();
+    if (!mysql) {
+        sendError(resp, "数据库连接失败",
+                  fn::HttpResponse::k500InternalServerError, conn);
+        return true;
+    }
+    ensureStudyCollectionsTables(*mysql);
+
+    const std::string serviceLevel =
+        StorageFeatureService::instance().getUserServiceLevel(*mysql, userId);
+    std::string sceneTag =
+        SceneModeService::instance().getUserSceneTag(*mysql, userId);
+    if (serviceLevel != "svip" || sceneTag != "learning") {
+        sendError(resp, "学习资料专题包仅学习模式下的 SVIP 用户可用",
+                  fn::HttpResponse::k403Forbidden, conn);
+        return true;
+    }
+
+    db::MySQLStatement collectionStmt(
+        *mysql,
+        "SELECT id, title, description, created_at, updated_at "
+        "FROM study_collections WHERE user_id = ? "
+        "ORDER BY updated_at DESC, id DESC");
+    collectionStmt.bindInt(userId);
+    if (!collectionStmt.execute()) {
+        sendError(resp, "查询学习专题失败",
+                  fn::HttpResponse::k500InternalServerError, conn);
+        return true;
+    }
+
+    json collections = json::array();
+    std::unordered_map<int, size_t> collectionIndex;
+    auto collectionRs = collectionStmt.getResultSet();
+    while (collectionRs && collectionRs->next()) {
+        const int collectionId = collectionRs->getInt(0);
+        collectionIndex[collectionId] = collections.size();
+        collections.push_back({{"id", collectionId},
+                               {"title", collectionRs->getString(1)},
+                               {"description", collectionRs->getString(2)},
+                               {"createdAt", collectionRs->getString(3)},
+                               {"updatedAt", collectionRs->getString(4)},
+                               {"items", json::array()}});
+    }
+
+    db::MySQLStatement itemStmt(
+        *mysql,
+        "SELECT i.id, i.collection_id, i.file_id, i.sort_order, i.status, "
+        "i.tag, i.note, i.created_at, i.updated_at, f.filename, "
+        "f.original_filename, f.file_size, COALESCE(f.relative_path, '') "
+        "FROM study_collection_items i "
+        "JOIN files f ON i.file_id = f.id "
+        "WHERE i.user_id = ? AND f.is_deleted = 0 AND f.status = 'success' "
+        "ORDER BY i.collection_id ASC, i.sort_order ASC, i.id ASC");
+    itemStmt.bindInt(userId);
+    if (!itemStmt.execute()) {
+        sendError(resp, "查询学习专题资料失败",
+                  fn::HttpResponse::k500InternalServerError, conn);
+        return true;
+    }
+
+    auto itemRs = itemStmt.getResultSet();
+    while (itemRs && itemRs->next()) {
+        const int collectionId = itemRs->getInt(1);
+        auto it = collectionIndex.find(collectionId);
+        if (it == collectionIndex.end()) {
+            continue;
+        }
+        collections[it->second]["items"].push_back(
+            {{"id", itemRs->getInt(0)},
+             {"collectionId", collectionId},
+             {"fileId", itemRs->getInt(2)},
+             {"sortOrder", itemRs->getInt(3)},
+             {"status", itemRs->getString(4)},
+             {"tag", itemRs->getString(5)},
+             {"note", itemRs->getString(6)},
+             {"createdAt", itemRs->getString(7)},
+             {"updatedAt", itemRs->getString(8)},
+             {"filename", itemRs->getString(9)},
+             {"originalName", itemRs->getString(10)},
+             {"size", itemRs->getInt64(11)},
+             {"relativePath", itemRs->getString(12)}});
+    }
+
+    sendJsonResponse(resp, {{"code", 0}, {"collections", collections}});
+    return true;
+}
+
+bool FileHandler::handleStudyCollectionAction(
+    const fileserver::net::TcpConnectionPtr &conn,
+    fileserver::net::HttpRequest &req,
+    std::shared_ptr<fileserver::net::HttpResponse> &resp) {
+    if (req.method() != fn::HttpRequest::kPost ||
+        req.path() != "/api/study_collections") {
+        return false;
+    }
+
+    const std::string authHeader = req.getHeader("Authorization");
+    if (authHeader.empty() || authHeader.find("Bearer ") != 0) {
+        sendError(resp, "未授权的访问，请先登录",
+                  fn::HttpResponse::k401Unauthorized, conn);
+        return true;
+    }
+    const int userId =
+        TokenManager::instance().verifyUserToken(authHeader.substr(7));
+    if (userId < 0) {
+        sendError(resp, "Token 无效或已过期，请重新登录",
+                  fn::HttpResponse::k401Unauthorized, conn);
+        return true;
+    }
+
+    auto mysql = db::MySQLPool::instance().getConnection();
+    if (!mysql) {
+        sendError(resp, "数据库连接失败",
+                  fn::HttpResponse::k500InternalServerError, conn);
+        return true;
+    }
+    ensureStudyCollectionsTables(*mysql);
+
+    const std::string serviceLevel =
+        StorageFeatureService::instance().getUserServiceLevel(*mysql, userId);
+    std::string sceneTag =
+        SceneModeService::instance().getUserSceneTag(*mysql, userId);
+    if (serviceLevel != "svip" || sceneTag != "learning") {
+        sendError(resp, "学习资料专题包仅学习模式下的 SVIP 用户可用",
+                  fn::HttpResponse::k403Forbidden, conn);
+        return true;
+    }
+
+    try {
+        const json body = json::parse(req.body());
+        const std::string action = body.value("action", "");
+
+        if (action == "create") {
+            std::string title = trimCopy(body.value("title", ""));
+            std::string description = trimCopy(body.value("description", ""));
+            if (title.empty() || title.size() > 128) {
+                sendError(resp, "专题名称不能为空且不能超过128个字符",
+                          fn::HttpResponse::k400BadRequest, conn);
+                return true;
+            }
+            if (description.size() > 2000) {
+                description = description.substr(0, 2000);
+            }
+            db::MySQLStatement stmt(
+                *mysql,
+                "INSERT INTO study_collections "
+                "(user_id, title, description) VALUES (?, ?, ?)");
+            stmt.bindInt(userId);
+            stmt.bindString(title);
+            stmt.bindString(description);
+            if (!stmt.execute()) {
+                sendError(resp, "创建学习专题失败",
+                          fn::HttpResponse::k500InternalServerError, conn);
+                return true;
+            }
+            sendJsonResponse(resp,
+                             {{"code", 0},
+                              {"message", "学习专题已创建"},
+                              {"collection",
+                               {{"id", static_cast<int>(stmt.insertId())},
+                                {"title", title},
+                                {"description", description},
+                                {"items", json::array()}}}});
+            return true;
+        }
+
+        const int collectionId = body.value("collectionId", 0);
+        if (collectionId <= 0) {
+            sendError(resp, "专题 ID 非法", fn::HttpResponse::k400BadRequest,
+                      conn);
+            return true;
+        }
+
+        db::MySQLStatement ownerStmt(
+            *mysql,
+            "SELECT id FROM study_collections WHERE id = ? AND user_id = ? "
+            "LIMIT 1");
+        ownerStmt.bindInt(collectionId);
+        ownerStmt.bindInt(userId);
+        if (!ownerStmt.execute()) {
+            sendError(resp, "查询专题失败",
+                      fn::HttpResponse::k500InternalServerError, conn);
+            return true;
+        }
+        auto ownerRs = ownerStmt.getResultSet();
+        if (!ownerRs || !ownerRs->next()) {
+            sendError(resp, "学习专题不存在或无权访问",
+                      fn::HttpResponse::k404NotFound, conn);
+            return true;
+        }
+
+        if (action == "delete_collection") {
+            db::MySQLStatement delItems(
+                *mysql,
+                "DELETE FROM study_collection_items WHERE collection_id = ? "
+                "AND user_id = ?");
+            delItems.bindInt(collectionId);
+            delItems.bindInt(userId);
+            delItems.execute();
+
+            db::MySQLStatement delCollection(
+                *mysql,
+                "DELETE FROM study_collections WHERE id = ? AND user_id = ?");
+            delCollection.bindInt(collectionId);
+            delCollection.bindInt(userId);
+            if (!delCollection.execute()) {
+                sendError(resp, "删除学习专题失败",
+                          fn::HttpResponse::k500InternalServerError, conn);
+                return true;
+            }
+            sendJsonResponse(resp,
+                             {{"code", 0}, {"message", "学习专题已删除"}});
+            return true;
+        }
+
+        if (action == "add_item") {
+            const int fileId = body.value("fileId", 0);
+            std::string tag = trimCopy(body.value("tag", ""));
+            std::string note = trimCopy(body.value("note", ""));
+            if (tag.size() > 64) {
+                tag = tag.substr(0, 64);
+            }
+            if (note.size() > 2000) {
+                note = note.substr(0, 2000);
+            }
+
+            db::MySQLStatement fileStmt(
+                *mysql,
+                "SELECT id FROM files WHERE id = ? AND user_id = ? "
+                "AND is_deleted = 0 AND status = 'success' LIMIT 1");
+            fileStmt.bindInt(fileId);
+            fileStmt.bindInt(userId);
+            if (!fileStmt.execute()) {
+                sendError(resp, "查询文件失败",
+                          fn::HttpResponse::k500InternalServerError, conn);
+                return true;
+            }
+            auto fileRs = fileStmt.getResultSet();
+            if (!fileRs || !fileRs->next()) {
+                sendError(resp, "文件不存在或无权加入专题",
+                          fn::HttpResponse::k404NotFound, conn);
+                return true;
+            }
+
+            int nextOrder = 0;
+            db::MySQLStatement orderStmt(
+                *mysql,
+                "SELECT COALESCE(MAX(sort_order), 0) + 1 "
+                "FROM study_collection_items WHERE collection_id = ?");
+            orderStmt.bindInt(collectionId);
+            if (orderStmt.execute()) {
+                auto orderRs = orderStmt.getResultSet();
+                if (orderRs && orderRs->next()) {
+                    nextOrder = orderRs->getInt(0);
+                }
+            }
+
+            db::MySQLStatement insertStmt(
+                *mysql,
+                "INSERT INTO study_collection_items "
+                "(collection_id, user_id, file_id, sort_order, tag, note) "
+                "VALUES (?, ?, ?, ?, ?, ?) "
+                "ON DUPLICATE KEY UPDATE tag = VALUES(tag), "
+                "note = VALUES(note), updated_at = NOW()");
+            insertStmt.bindInt(collectionId);
+            insertStmt.bindInt(userId);
+            insertStmt.bindInt(fileId);
+            insertStmt.bindInt(nextOrder);
+            insertStmt.bindString(tag);
+            insertStmt.bindString(note);
+            if (!insertStmt.execute()) {
+                sendError(resp, "加入学习专题失败",
+                          fn::HttpResponse::k500InternalServerError, conn);
+                return true;
+            }
+            sendJsonResponse(resp,
+                             {{"code", 0}, {"message", "资料已加入专题"}});
+            return true;
+        }
+
+        const int itemId = body.value("itemId", 0);
+        if (itemId <= 0) {
+            sendError(resp, "专题资料 ID 非法",
+                      fn::HttpResponse::k400BadRequest, conn);
+            return true;
+        }
+
+        if (action == "update_item") {
+            std::string status = body.value("status", "todo");
+            if (status != "todo" && status != "doing" &&
+                status != "done") {
+                status = "todo";
+            }
+            std::string tag = trimCopy(body.value("tag", ""));
+            std::string note = trimCopy(body.value("note", ""));
+            if (tag.size() > 64) {
+                tag = tag.substr(0, 64);
+            }
+            if (note.size() > 2000) {
+                note = note.substr(0, 2000);
+            }
+            db::MySQLStatement updateStmt(
+                *mysql,
+                "UPDATE study_collection_items "
+                "SET status = ?, tag = ?, note = ? "
+                "WHERE id = ? AND collection_id = ? AND user_id = ?");
+            updateStmt.bindString(status);
+            updateStmt.bindString(tag);
+            updateStmt.bindString(note);
+            updateStmt.bindInt(itemId);
+            updateStmt.bindInt(collectionId);
+            updateStmt.bindInt(userId);
+            if (!updateStmt.execute()) {
+                sendError(resp, "更新专题资料失败",
+                          fn::HttpResponse::k500InternalServerError, conn);
+                return true;
+            }
+            sendJsonResponse(resp,
+                             {{"code", 0}, {"message", "专题资料已更新"}});
+            return true;
+        }
+
+        if (action == "remove_item") {
+            db::MySQLStatement delStmt(
+                *mysql,
+                "DELETE FROM study_collection_items "
+                "WHERE id = ? AND collection_id = ? AND user_id = ?");
+            delStmt.bindInt(itemId);
+            delStmt.bindInt(collectionId);
+            delStmt.bindInt(userId);
+            if (!delStmt.execute()) {
+                sendError(resp, "移除专题资料失败",
+                          fn::HttpResponse::k500InternalServerError, conn);
+                return true;
+            }
+            sendJsonResponse(resp,
+                             {{"code", 0}, {"message", "专题资料已移除"}});
+            return true;
+        }
+
+        sendError(resp, "未知学习专题操作", fn::HttpResponse::k400BadRequest,
+                  conn);
+        return true;
+    } catch (const std::exception &e) {
+        sendError(resp, "学习专题操作失败：" + std::string(e.what()),
+                  fn::HttpResponse::k400BadRequest, conn);
+        return true;
+    }
+}
+
+bool FileHandler::handleUpdateVideoProgress(
+    const fileserver::net::TcpConnectionPtr &conn,
+    fileserver::net::HttpRequest &req,
+    std::shared_ptr<fileserver::net::HttpResponse> &resp) {
+    if (req.method() != fn::HttpRequest::kPost ||
+        req.path() != "/api/video_progress") {
+        return false;
+    }
+
+    const std::string authHeader = req.getHeader("Authorization");
+    if (authHeader.empty() || authHeader.find("Bearer ") != 0) {
+        sendError(resp, "未授权的访问，请先登录",
+                  fn::HttpResponse::k401Unauthorized, conn);
+        return true;
+    }
+
+    const int userId =
+        TokenManager::instance().verifyUserToken(authHeader.substr(7));
+    if (userId < 0) {
+        sendError(resp, "Token 无效或已过期，请重新登录",
+                  fn::HttpResponse::k401Unauthorized, conn);
+        return true;
+    }
+
+    auto mysql = db::MySQLPool::instance().getConnection();
+    if (!mysql) {
+        sendError(resp, "数据库连接失败",
+                  fn::HttpResponse::k500InternalServerError, conn);
+        return true;
+    }
+    ensureLearningTables(*mysql);
+
+    const std::string serviceLevel =
+        StorageFeatureService::instance().getUserServiceLevel(*mysql, userId);
+    std::string sceneTag =
+        SceneModeService::instance().getUserSceneTag(*mysql, userId);
+    if ((serviceLevel != "vip" && serviceLevel != "svip") ||
+        sceneTag != "learning") {
+        sendError(resp, "学习进度仅学习模式下的 VIP/SVIP 用户可用",
+                  fn::HttpResponse::k403Forbidden, conn);
+        return true;
+    }
+
+    try {
+        const json body = json::parse(req.body());
+        const std::string serverFilename =
+            trimCopy(body.value("filename", ""));
+        int currentTimeMs = body.value("currentTimeMs", 0);
+        int durationMs = body.value("durationMs", 0);
+        int playedDeltaMs = body.value("playedDeltaMs", 0);
+
+        currentTimeMs = std::max(0, currentTimeMs);
+        durationMs = std::max(0, durationMs);
+        playedDeltaMs = std::max(0, std::min(30000, playedDeltaMs));
+        if (serverFilename.empty()) {
+            sendError(resp, "文件名不能为空", fn::HttpResponse::k400BadRequest,
+                      conn);
+            return true;
+        }
+        if (durationMs > 0 && currentTimeMs > durationMs) {
+            currentTimeMs = durationMs;
+        }
+
+        db::MySQLStatement fileStmt(
+            *mysql,
+            "SELECT f.id, f.original_filename "
+            "FROM files f "
+            "LEFT JOIN file_shares s ON f.id = s.file_id AND s.share_type = "
+            "'specific' AND s.target_user_id = ? "
+            "WHERE f.filename = ? AND f.status = 'success' "
+            "AND f.is_deleted = 0 "
+            "AND (f.user_id = ? OR s.share_id IS NOT NULL) "
+            "LIMIT 1");
+        fileStmt.bindInt(userId);
+        fileStmt.bindString(serverFilename);
+        fileStmt.bindInt(userId);
+        if (!fileStmt.execute()) {
+            sendError(resp, "数据库错误",
+                      fn::HttpResponse::k500InternalServerError, conn);
+            return true;
+        }
+
+        auto fileRs = fileStmt.getResultSet();
+        if (!fileRs || !fileRs->next()) {
+            sendError(resp, "文件未找到或无权访问",
+                      fn::HttpResponse::k404NotFound, conn);
+            return true;
+        }
+
+        const int fileId = fileRs->getInt(0);
+        const std::string originalFilename = fileRs->getString(1);
+        if (!isVideoFile(originalFilename)) {
+            sendError(resp, "该文件不是视频文件",
+                      fn::HttpResponse::k400BadRequest, conn);
+            return true;
+        }
+
+        int oldLastPositionMs = 0;
+        int oldMaxReachedMs = 0;
+        int oldDurationMs = 0;
+        int oldWatchedMs = 0;
+        bool hasProgress = false;
+        db::MySQLStatement queryStmt(
+            *mysql,
+            "SELECT last_position_ms, max_reached_ms, duration_ms, watched_ms "
+            "FROM video_learning_progress "
+            "WHERE user_id = ? AND file_id = ? LIMIT 1");
+        queryStmt.bindInt(userId);
+        queryStmt.bindInt(fileId);
+        if (queryStmt.execute()) {
+            auto progressRs = queryStmt.getResultSet();
+            if (progressRs && progressRs->next()) {
+                hasProgress = true;
+                oldLastPositionMs = progressRs->getInt(0);
+                oldMaxReachedMs = progressRs->getInt(1);
+                oldDurationMs = progressRs->getInt(2);
+                oldWatchedMs = progressRs->getInt(3);
+            }
+        }
+
+        const int mergedDurationMs = std::max(oldDurationMs, durationMs);
+        const int maxAdvanceBudgetMs = playedDeltaMs * 4 + 5000;
+        int newMaxReachedMs = oldMaxReachedMs;
+        if (currentTimeMs > oldMaxReachedMs) {
+            // 防刷进度：最远学习进度不能因为一次拖动直接跳到结尾。
+            // 它最多按本次真实播放时间推进，4倍容忍用于兼容SVIP倍速播放。
+            newMaxReachedMs =
+                std::min(currentTimeMs, oldMaxReachedMs + maxAdvanceBudgetMs);
+        }
+        if (mergedDurationMs > 0) {
+            newMaxReachedMs = std::min(newMaxReachedMs, mergedDurationMs);
+        }
+        const int newWatchedMs = oldWatchedMs + playedDeltaMs;
+
+        if (hasProgress) {
+            db::MySQLStatement updateStmt(
+                *mysql,
+                "UPDATE video_learning_progress "
+                "SET last_position_ms = ?, max_reached_ms = ?, "
+                "duration_ms = ?, watched_ms = ? "
+                "WHERE user_id = ? AND file_id = ?");
+            updateStmt.bindInt(currentTimeMs);
+            updateStmt.bindInt(newMaxReachedMs);
+            updateStmt.bindInt(mergedDurationMs);
+            updateStmt.bindInt(newWatchedMs);
+            updateStmt.bindInt(userId);
+            updateStmt.bindInt(fileId);
+            if (!updateStmt.execute()) {
+                sendError(resp, "更新学习进度失败",
+                          fn::HttpResponse::k500InternalServerError, conn);
+                return true;
+            }
+        } else {
+            db::MySQLStatement insertStmt(
+                *mysql,
+                "INSERT INTO video_learning_progress "
+                "(user_id, file_id, last_position_ms, max_reached_ms, "
+                "duration_ms, watched_ms) VALUES (?, ?, ?, ?, ?, ?)");
+            insertStmt.bindInt(userId);
+            insertStmt.bindInt(fileId);
+            insertStmt.bindInt(currentTimeMs);
+            insertStmt.bindInt(newMaxReachedMs);
+            insertStmt.bindInt(mergedDurationMs);
+            insertStmt.bindInt(newWatchedMs);
+            if (!insertStmt.execute()) {
+                sendError(resp, "保存学习进度失败",
+                          fn::HttpResponse::k500InternalServerError, conn);
+                return true;
+            }
+        }
+
+        const int percent =
+            mergedDurationMs > 0
+                ? std::min(100, static_cast<int>(
+                                    (static_cast<int64_t>(newMaxReachedMs) *
+                                     100) /
+                                    mergedDurationMs))
+                : 0;
+        sendJsonResponse(resp,
+                         {{"code", 0},
+                          {"progress",
+                           {{"lastPositionMs", currentTimeMs},
+                            {"maxReachedMs", newMaxReachedMs},
+                            {"durationMs", mergedDurationMs},
+                            {"percent", percent}}}});
+        static_cast<void>(oldLastPositionMs);
+        return true;
+    } catch (const std::exception &e) {
+        sendError(resp, "更新学习进度失败：" + std::string(e.what()),
+                  fn::HttpResponse::k400BadRequest, conn);
+        return true;
+    }
 }
 
 bool FileHandler::handleCreateFolder(
@@ -894,6 +2412,78 @@ bool FileHandler::handleDeleteFile(
     return true;
 }
 
+bool FileHandler::handleBatchDelete(
+    const fileserver::net::TcpConnectionPtr &conn,
+    fileserver::net::HttpRequest &req,
+    std::shared_ptr<fileserver::net::HttpResponse> &resp) {
+    if (req.method() != fn::HttpRequest::kPost ||
+        req.path() != "/delete_batch") {
+        return false;
+    }
+
+    const std::string authHeader = req.getHeader("Authorization");
+    if (authHeader.empty() || authHeader.find("Bearer ") != 0) {
+        sendError(resp, "未授权的访问，请先登录",
+                  fn::HttpResponse::k401Unauthorized, conn);
+        return true;
+    }
+
+    const int userId =
+        TokenManager::instance().verifyUserToken(authHeader.substr(7));
+    if (userId < 0) {
+        sendError(resp, "未授权的访问，请先登录",
+                  fn::HttpResponse::k401Unauthorized, conn);
+        return true;
+    }
+
+    try {
+        const json reqData = json::parse(req.body());
+        const std::vector<int> fileIds = parseIdArray(reqData.value("fileIds", json::array()));
+        if (fileIds.empty()) {
+            sendError(resp, "请选择要删除的文件",
+                      fn::HttpResponse::k400BadRequest, conn);
+            return true;
+        }
+
+        auto mysql = db::MySQLPool::instance().getConnection();
+        if (!mysql) {
+            sendError(resp, "数据库连接失败",
+                      fn::HttpResponse::k500InternalServerError, conn);
+            return true;
+        }
+
+        std::string sql =
+            "UPDATE files SET is_deleted = 1, deleted_at = NOW() "
+            "WHERE user_id = ? AND is_deleted = 0 AND id IN (" +
+            buildPlaceholders(fileIds.size()) + ")";
+        db::MySQLStatement stmt(*mysql, sql);
+        stmt.bindInt(userId);
+        for (int fileId : fileIds) {
+            stmt.bindInt(fileId);
+        }
+
+        if (!stmt.execute()) {
+            sendError(resp, "批量删除失败",
+                      fn::HttpResponse::k500InternalServerError, conn);
+            return true;
+        }
+
+        json response = {{"code", 0},
+                         {"message", "批量删除成功"},
+                         {"affected", stmt.affectedRows()}};
+        const std::string body = response.dump();
+        resp->setStatusCode(fn::HttpResponse::k200Ok);
+        resp->setContentType("application/json");
+        resp->setBody(body);
+        resp->addHeader("Content-Length", std::to_string(body.size()));
+        return true;
+    } catch (const std::exception &e) {
+        sendError(resp, "批量删除失败：" + std::string(e.what()),
+                  fn::HttpResponse::k500InternalServerError, conn);
+        return true;
+    }
+}
+
 bool FileHandler::handleListRecycleBin(
     const fileserver::net::TcpConnectionPtr &conn,
     fileserver::net::HttpRequest &req,
@@ -913,9 +2503,18 @@ bool FileHandler::handleListRecycleBin(
     std::string fileType = req.getQuery("type");
 
     auto mysql = db::MySQLPool::instance().getConnection();
-    std::string sql = "SELECT id, original_filename, file_size, deleted_at "
-                      "FROM files "
-                      "WHERE user_id = ? AND is_deleted = 1 ";
+    const std::string serviceLevel =
+        StorageFeatureService::instance().getUserServiceLevel(*mysql, userId);
+    std::string sql =
+        "SELECT id, original_filename, file_size, deleted_at, "
+        "GREATEST(0, "
+        "(CASE "
+        "WHEN ? = 'svip' THEN 30 "
+        "WHEN ? = 'vip' THEN 7 "
+        "ELSE 2 END) - TIMESTAMPDIFF(DAY, deleted_at, NOW())) AS "
+        "remaining_days "
+        "FROM files "
+        "WHERE user_id = ? AND is_deleted = 1 ";
 
     if (!keyword.empty()) {
         sql += "AND original_filename LIKE ? ";
@@ -940,6 +2539,8 @@ bool FileHandler::handleListRecycleBin(
 
     sql += "ORDER BY deleted_at DESC";
     db::MySQLStatement stmt(*mysql, sql);
+    stmt.bindString(serviceLevel);
+    stmt.bindString(serviceLevel);
     stmt.bindInt(userId);
     if (!keyword.empty()) {
         stmt.bindString("%" + keyword + "%");
@@ -957,10 +2558,14 @@ bool FileHandler::handleListRecycleBin(
         files.push_back({{"id", rs->getInt(0)},
                          {"originalName", rs->getString(1)},
                          {"size", rs->getInt64(2)},
-                         {"deletedAt", rs->getString(3)}});
+                         {"deletedAt", rs->getString(3)},
+                         {"remainingDays", rs->getInt(4)}});
     }
 
-    json response = {{"code", 0}, {"data", files}};
+    json response = {{"code", 0},
+                     {"serviceLevel", serviceLevel},
+                     {"retentionDays", getRecycleRetentionDays(serviceLevel)},
+                     {"data", files}};
     std::string respBody = response.dump();
     resp->setStatusCode(fileserver::net::HttpResponse::k200Ok);
     resp->setBody(respBody);
@@ -1054,6 +2659,197 @@ bool FileHandler::handleHardDelete(
     resp->addHeader("Content-Length", std::to_string(bodyStr.size()));
     resp->setContentType("application/json");
     resp->setBody(bodyStr);
+    return true;
+}
+
+bool FileHandler::handleBatchHardDelete(
+    const fileserver::net::TcpConnectionPtr &conn,
+    fileserver::net::HttpRequest &req,
+    std::shared_ptr<fileserver::net::HttpResponse> &resp) {
+    if (req.method() != fn::HttpRequest::kPost ||
+        req.path() != "/hard_delete_batch") {
+        return false;
+    }
+
+    const std::string authHeader = req.getHeader("Authorization");
+    if (authHeader.empty() || authHeader.find("Bearer ") != 0) {
+        sendError(resp, "未登录", fn::HttpResponse::k401Unauthorized, conn);
+        return true;
+    }
+
+    const int userId =
+        TokenManager::instance().verifyUserToken(authHeader.substr(7));
+    if (userId < 0) {
+        sendError(resp, "未登录", fn::HttpResponse::k401Unauthorized, conn);
+        return true;
+    }
+
+    try {
+        const json reqData = json::parse(req.body());
+        const std::vector<int> fileIds = parseIdArray(reqData.value("fileIds", json::array()));
+        if (fileIds.empty()) {
+            sendError(resp, "请选择要彻底删除的文件",
+                      fn::HttpResponse::k400BadRequest, conn);
+            return true;
+        }
+
+        auto mysql = db::MySQLPool::instance().getConnection();
+        if (!mysql) {
+            sendError(resp, "数据库连接失败",
+                      fn::HttpResponse::k500InternalServerError, conn);
+            return true;
+        }
+
+        std::string updateSql =
+            "UPDATE files SET is_deleted = 2 WHERE user_id = ? AND is_deleted = 1 "
+            "AND id IN (" +
+            buildPlaceholders(fileIds.size()) + ")";
+        db::MySQLStatement updateStmt(*mysql, updateSql);
+        updateStmt.bindInt(userId);
+        for (int fileId : fileIds) {
+            updateStmt.bindInt(fileId);
+        }
+
+        if (!updateStmt.execute()) {
+            sendError(resp, "批量彻底删除失败",
+                      fn::HttpResponse::k500InternalServerError, conn);
+            return true;
+        }
+
+        std::string shareSql =
+            "DELETE FROM file_shares WHERE file_id IN (" +
+            buildPlaceholders(fileIds.size()) + ")";
+        db::MySQLStatement shareStmt(*mysql, shareSql);
+        for (int fileId : fileIds) {
+            shareStmt.bindInt(fileId);
+        }
+        shareStmt.execute();
+
+        json response = {{"code", 0},
+                         {"message", "批量彻底删除成功"},
+                         {"affected", updateStmt.affectedRows()}};
+        const std::string body = response.dump();
+        resp->setStatusCode(fn::HttpResponse::k200Ok);
+        resp->setContentType("application/json");
+        resp->setBody(body);
+        resp->addHeader("Content-Length", std::to_string(body.size()));
+        return true;
+    } catch (const std::exception &e) {
+        sendError(resp, "批量彻底删除失败：" + std::string(e.what()),
+                  fn::HttpResponse::k500InternalServerError, conn);
+        return true;
+    }
+}
+
+bool FileHandler::handleDeleteFolder(
+    const fileserver::net::TcpConnectionPtr &conn,
+    fileserver::net::HttpRequest &req,
+    std::shared_ptr<fileserver::net::HttpResponse> &resp) {
+    if (req.method() != fn::HttpRequest::kDelete || req.path() != "/folders") {
+        return false;
+    }
+
+    const std::string authHeader = req.getHeader("Authorization");
+    if (authHeader.empty() || authHeader.find("Bearer ") != 0) {
+        sendError(resp, "未授权的访问，请先登录",
+                  fn::HttpResponse::k401Unauthorized, conn);
+        return true;
+    }
+
+    const int userId =
+        TokenManager::instance().verifyUserToken(authHeader.substr(7));
+    if (userId < 0) {
+        sendError(resp, "未授权的访问，请先登录",
+                  fn::HttpResponse::k401Unauthorized, conn);
+        return true;
+    }
+
+    const int folderId = parsePositiveInt(req.getQuery("folder_id"), 0);
+    if (folderId <= 0) {
+        sendError(resp, "目录参数无效", fn::HttpResponse::k400BadRequest,
+                  conn);
+        return true;
+    }
+
+    auto mysql = db::MySQLPool::instance().getConnection();
+    if (!mysql) {
+        sendError(resp, "数据库连接失败",
+                  fn::HttpResponse::k500InternalServerError, conn);
+        return true;
+    }
+
+    auto &storageService = StorageFeatureService::instance();
+    const auto folder = storageService.getFolderInfo(*mysql, userId, folderId);
+    if (folder.id <= 0) {
+        sendError(resp, "目录不存在", fn::HttpResponse::k404NotFound, conn);
+        return true;
+    }
+
+    const std::string folderPrefix = folder.fullPath + "/%";
+
+    std::vector<int> folderIds;
+    {
+        std::string querySql =
+            "SELECT id FROM folders WHERE user_id = ? AND (id = ? OR full_path LIKE ?)";
+        db::MySQLStatement queryStmt(*mysql, querySql);
+        queryStmt.bindInt(userId);
+        queryStmt.bindInt(folderId);
+        queryStmt.bindString(folderPrefix);
+        if (!queryStmt.execute()) {
+            sendError(resp, "查询目录失败",
+                      fn::HttpResponse::k500InternalServerError, conn);
+            return true;
+        }
+        auto rs = queryStmt.getResultSet();
+        while (rs && rs->next()) {
+            folderIds.push_back(rs->getInt(0));
+        }
+    }
+
+    if (folderIds.empty()) {
+        sendError(resp, "目录不存在", fn::HttpResponse::k404NotFound, conn);
+        return true;
+    }
+
+    std::string folderPlaceholders = buildPlaceholders(folderIds.size());
+    std::string fileSql =
+        "UPDATE files SET is_deleted = 1, deleted_at = NOW(), folder_id = NULL "
+        "WHERE user_id = ? AND is_deleted = 0 AND folder_id IN (" +
+        folderPlaceholders + ")";
+    db::MySQLStatement fileStmt(*mysql, fileSql);
+    fileStmt.bindInt(userId);
+    for (int id : folderIds) {
+        fileStmt.bindInt(id);
+    }
+    if (!fileStmt.execute()) {
+        sendError(resp, "删除目录下文件失败",
+                  fn::HttpResponse::k500InternalServerError, conn);
+        return true;
+    }
+
+    std::string deleteFolderSql =
+        "DELETE FROM folders WHERE user_id = ? AND id IN (" +
+        folderPlaceholders + ")";
+    db::MySQLStatement folderStmt(*mysql, deleteFolderSql);
+    folderStmt.bindInt(userId);
+    for (int id : folderIds) {
+        folderStmt.bindInt(id);
+    }
+    if (!folderStmt.execute()) {
+        sendError(resp, "删除目录失败",
+                  fn::HttpResponse::k500InternalServerError, conn);
+        return true;
+    }
+
+    json response = {{"code", 0},
+                     {"message", "目录删除成功"},
+                     {"affectedFolders", folderStmt.affectedRows()},
+                     {"affectedFiles", fileStmt.affectedRows()}};
+    const std::string body = response.dump();
+    resp->setStatusCode(fn::HttpResponse::k200Ok);
+    resp->setContentType("application/json");
+    resp->setBody(body);
+    resp->addHeader("Content-Length", std::to_string(body.size()));
     return true;
 }
 

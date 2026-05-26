@@ -152,6 +152,8 @@ void MasterClient::parseResponseBody(const std::string &body) {
             handleRegisterResponse(body);
         } else if (respJson.contains("orphan_files")) {
             handleReportFilesResponse(respJson);
+        } else if (respJson.contains("admin_policy")) {
+            handleAdminPolicyResponse(respJson);
         } else if (respJson.contains("code")) {
             int code = respJson["code"].get<int>();
             if (code != 0) {
@@ -187,6 +189,18 @@ void MasterClient::handleReportFilesResponse(const json &respJson) {
     }
     LOG_INFO << "Report_files orphan cleanup complete, deleted_count="
              << deletedCount;
+}
+
+void MasterClient::handleAdminPolicyResponse(const json &respJson) {
+    const auto &policyJson = respJson["admin_policy"];
+    DataNode::AdminPolicyCache policy;
+    policy.qosMode = policyJson.value("qos_mode", "elastic");
+    policy.manualOverride = policyJson.value("manual_override", false);
+    policy.globalBandwidthLimitBps =
+        policyJson.value("global_bandwidth_limit_bps", 0ULL);
+    policy.nodeBandwidthLimitBps =
+        policyJson.value("node_bandwidth_limit_bps", 0ULL);
+    datanode_->updateAdminPolicy(policy);
 }
 
 void MasterClient::handleRegisterResponse(const std::string &response) {
@@ -293,6 +307,21 @@ void MasterClient::sendHeartbeat() {
     int activeUploads = datanode_->getActiveUploads();
     int activeDownloads = datanode_->getActiveDownloads();
     int activeTransfers = datanode_->getActiveTransfers();
+    uint64_t uploadBps = datanode_->getCurrentUploadBps();
+    uint64_t downloadBps = datanode_->getCurrentDownloadBps();
+    int connectedUsers = datanode_->getConnectedUsers();
+    json activeSessions = json::array();
+    for (const auto &session : datanode_->getTransferSessionSnapshots()) {
+        activeSessions.push_back(
+            {{"user_id", session.userId},
+             {"username", session.username},
+             {"service_level", session.serviceLevel},
+             {"scene_tag", session.sceneTag},
+             {"transfer_type", session.transferType},
+             {"file_name", session.fileName},
+             {"current_bps", session.currentBps},
+             {"started_at", session.startedAt}});
+    }
     json hbMessage = {
         {"node_id", currentNodeId},
         {"ip", myAddr_.toIp()},
@@ -303,6 +332,10 @@ void MasterClient::sendHeartbeat() {
         {"active_uploads", activeUploads},
         {"active_downloads", activeDownloads},
         {"active_transfers", activeTransfers},
+        {"upload_bps", uploadBps},
+        {"download_bps", downloadBps},
+        {"connected_users", connectedUsers},
+        {"active_user_sessions", activeSessions},
         {"timestamp", fileserver::Timestamp::now().microSecondsSinceEpoch()}};
     post("/heartbeat", hbMessage.dump(), true);
     LOG_INFO << "Heartbeat sent. Frees: " << diskFreeMb

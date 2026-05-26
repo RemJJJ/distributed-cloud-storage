@@ -1,7 +1,9 @@
 #include "MasterHttpHandler.h"
+#include "AdminHandler.h"
 #include "AsyncDeleteTask.h"
 #include "AsyncHotCacheTask.h"
 #include "DataNodeHandler.h"
+#include "EntertainmentHandler.h"
 #include "FileHandler.h"
 #include "HotCacheService.h"
 #include "NodeManager.h"
@@ -176,6 +178,36 @@ void MasterHttpHandler::processStaleUploadingFiles(EventLoop *loop) {
     }
 }
 
+void MasterHttpHandler::processExpiredRecycleBin(EventLoop *loop) {
+    static_cast<void>(loop);
+    auto mysql = db::MySQLPool::instance().getConnection();
+    if (!mysql) {
+        return;
+    }
+
+    db::MySQLStatement stmt(
+        *mysql,
+        "UPDATE files f "
+        "JOIN users u ON f.user_id = u.id "
+        "SET f.is_deleted = 2 "
+        "WHERE f.is_deleted = 1 AND f.deleted_at IS NOT NULL AND ("
+        "(u.service_level = 'normal' AND f.deleted_at <= DATE_SUB(NOW(), "
+        "INTERVAL 2 DAY)) OR "
+        "(u.service_level = 'vip' AND f.deleted_at <= DATE_SUB(NOW(), "
+        "INTERVAL 7 DAY)) OR "
+        "(u.service_level = 'svip' AND f.deleted_at <= DATE_SUB(NOW(), "
+        "INTERVAL 30 DAY)))");
+    if (!stmt.execute()) {
+        LOG_WARN << "Failed to expire recycle bin files: " << stmt.getError();
+        return;
+    }
+
+    if (stmt.affectedRows() > 0) {
+        LOG_INFO << "Expired recycle bin files promoted to GC queue: "
+                 << stmt.affectedRows();
+    }
+}
+
 void MasterHttpHandler::processHotCacheTasks(EventLoop *loop) {
     auto tasks = HotCacheService::instance().collectDispatchTasks();
     if (tasks.empty()) {
@@ -241,6 +273,11 @@ void MasterHttpHandler::initRoutes() {
                     std::shared_ptr<HttpResponse> &resp) {
                  return handleIndex(conn, req, resp);
              });
+    addRoute("/admin.html", HttpRequest::kGet,
+             [this](const TcpConnectionPtr &conn, HttpRequest &req,
+                    std::shared_ptr<HttpResponse> &resp) {
+                 return handleIndex(conn, req, resp);
+             });
     addRoute("/register.html", HttpRequest::kGet,
              [this](const TcpConnectionPtr &conn, HttpRequest &req,
                     std::shared_ptr<HttpResponse> &resp) {
@@ -270,6 +307,11 @@ void MasterHttpHandler::initRoutes() {
              [userHandler](const TcpConnectionPtr &conn, HttpRequest &req,
                            std::shared_ptr<HttpResponse> &resp) {
                  return userHandler->handleLogout(conn, req, resp);
+             });
+    addRoute("/api/scene_mode", fileserver::net::HttpRequest::kPost,
+             [userHandler](const TcpConnectionPtr &conn, HttpRequest &req,
+                           std::shared_ptr<HttpResponse> &resp) {
+                 return userHandler->handleUpdateSceneMode(conn, req, resp);
              });
     addRoute("/users/search", fileserver::net::HttpRequest::kGet,
              [userHandler](const TcpConnectionPtr &conn, HttpRequest &req,
@@ -324,16 +366,112 @@ void MasterHttpHandler::initRoutes() {
                            std::shared_ptr<HttpResponse> &resp) {
                  return fileHandler->handleCreateFolder(conn, req, resp);
              });
+    addRoute("/folders", HttpRequest::kDelete,
+             [fileHandler](const TcpConnectionPtr &conn, HttpRequest &req,
+                           std::shared_ptr<HttpResponse> &resp) {
+                 return fileHandler->handleDeleteFolder(conn, req, resp);
+             });
     addRoute("/download/([^/]+)", fileserver::net::HttpRequest::kGet,
              [fileHandler](const TcpConnectionPtr &conn, HttpRequest &req,
                            std::shared_ptr<HttpResponse> &resp) {
                  return fileHandler->handleFileDownload(conn, req, resp);
              },
              {"filename"});
+    addRoute("/api/video_notes", fileserver::net::HttpRequest::kGet,
+             [fileHandler](const TcpConnectionPtr &conn, HttpRequest &req,
+                           std::shared_ptr<HttpResponse> &resp) {
+                 return fileHandler->handleListVideoNotes(conn, req, resp);
+             });
+    addRoute("/api/video_notes", fileserver::net::HttpRequest::kPost,
+             [fileHandler](const TcpConnectionPtr &conn, HttpRequest &req,
+                           std::shared_ptr<HttpResponse> &resp) {
+                 return fileHandler->handleCreateVideoNote(conn, req, resp);
+             });
+    addRoute("/api/video_segments", fileserver::net::HttpRequest::kGet,
+             [fileHandler](const TcpConnectionPtr &conn, HttpRequest &req,
+                           std::shared_ptr<HttpResponse> &resp) {
+                 return fileHandler->handleListVideoSegments(conn, req, resp);
+             });
+    addRoute("/api/video_segments", fileserver::net::HttpRequest::kPost,
+             [fileHandler](const TcpConnectionPtr &conn, HttpRequest &req,
+                           std::shared_ptr<HttpResponse> &resp) {
+                 return fileHandler->handleCreateVideoSegment(conn, req, resp);
+             });
+    addRoute("/api/video_segments", fileserver::net::HttpRequest::kDelete,
+             [fileHandler](const TcpConnectionPtr &conn, HttpRequest &req,
+                           std::shared_ptr<HttpResponse> &resp) {
+                 return fileHandler->handleDeleteVideoSegment(conn, req, resp);
+             });
+    addRoute("/api/study_collections", fileserver::net::HttpRequest::kGet,
+             [fileHandler](const TcpConnectionPtr &conn, HttpRequest &req,
+                           std::shared_ptr<HttpResponse> &resp) {
+                 return fileHandler->handleListStudyCollections(conn, req,
+                                                                resp);
+             });
+    addRoute("/api/study_collections", fileserver::net::HttpRequest::kPost,
+             [fileHandler](const TcpConnectionPtr &conn, HttpRequest &req,
+                           std::shared_ptr<HttpResponse> &resp) {
+                 return fileHandler->handleStudyCollectionAction(conn, req,
+                                                                 resp);
+             });
+
+    auto entertainmentHandler = std::make_shared<EntertainmentHandler>();
+    addRoute("/api/entertainment/playlists",
+             fileserver::net::HttpRequest::kGet,
+             [entertainmentHandler](const TcpConnectionPtr &conn,
+                                    HttpRequest &req,
+                                    std::shared_ptr<HttpResponse> &resp) {
+                 return entertainmentHandler->handlePlaylists(conn, req, resp);
+             });
+    addRoute("/api/entertainment/playlists",
+             fileserver::net::HttpRequest::kPost,
+             [entertainmentHandler](const TcpConnectionPtr &conn,
+                                    HttpRequest &req,
+                                    std::shared_ptr<HttpResponse> &resp) {
+                 return entertainmentHandler->handlePlaylists(conn, req, resp);
+             });
+    addRoute("/api/entertainment/danmaku",
+             fileserver::net::HttpRequest::kGet,
+             [entertainmentHandler](const TcpConnectionPtr &conn,
+                                    HttpRequest &req,
+                                    std::shared_ptr<HttpResponse> &resp) {
+                 return entertainmentHandler->handleDanmaku(conn, req, resp);
+             });
+    addRoute("/api/entertainment/danmaku",
+             fileserver::net::HttpRequest::kPost,
+             [entertainmentHandler](const TcpConnectionPtr &conn,
+                                    HttpRequest &req,
+                                    std::shared_ptr<HttpResponse> &resp) {
+                 return entertainmentHandler->handleDanmaku(conn, req, resp);
+             });
+    addRoute("/api/entertainment/rooms",
+             fileserver::net::HttpRequest::kGet,
+             [entertainmentHandler](const TcpConnectionPtr &conn,
+                                    HttpRequest &req,
+                                    std::shared_ptr<HttpResponse> &resp) {
+                 return entertainmentHandler->handleRooms(conn, req, resp);
+             });
+    addRoute("/api/entertainment/rooms",
+             fileserver::net::HttpRequest::kPost,
+             [entertainmentHandler](const TcpConnectionPtr &conn,
+                                    HttpRequest &req,
+                                    std::shared_ptr<HttpResponse> &resp) {
+                 return entertainmentHandler->handleRooms(conn, req, resp);
+             });
+    addRoute("/api/video_progress", fileserver::net::HttpRequest::kPost,
+             [fileHandler](const TcpConnectionPtr &conn, HttpRequest &req,
+                           std::shared_ptr<HttpResponse> &resp) {
+                 return fileHandler->handleUpdateVideoProgress(conn, req, resp);
+             });
     addRoute("/delete", fileserver::net::HttpRequest::kDelete,
              [fileHandler](const TcpConnectionPtr &conn, HttpRequest &req,
                            std::shared_ptr<HttpResponse> &resp) {
                  return fileHandler->handleDeleteFile(conn, req, resp);
+             });
+    addRoute("/delete_batch", fileserver::net::HttpRequest::kPost,
+             [fileHandler](const TcpConnectionPtr &conn, HttpRequest &req,
+                           std::shared_ptr<HttpResponse> &resp) {
+                 return fileHandler->handleBatchDelete(conn, req, resp);
              });
     addRoute("/recycle_bin", fileserver::net::HttpRequest::kGet,
              [fileHandler](const TcpConnectionPtr &conn, HttpRequest &req,
@@ -349,6 +487,11 @@ void MasterHttpHandler::initRoutes() {
              [fileHandler](const TcpConnectionPtr &conn, HttpRequest &req,
                            std::shared_ptr<HttpResponse> &resp) {
                  return fileHandler->handleHardDelete(conn, req, resp);
+             });
+    addRoute("/hard_delete_batch", fileserver::net::HttpRequest::kPost,
+             [fileHandler](const TcpConnectionPtr &conn, HttpRequest &req,
+                           std::shared_ptr<HttpResponse> &resp) {
+                 return fileHandler->handleBatchHardDelete(conn, req, resp);
              });
 
     // datanodeHandler路由
@@ -375,6 +518,50 @@ void MasterHttpHandler::initRoutes() {
                                std::shared_ptr<HttpResponse> &resp) {
                  return datanodeHandler->handleReportFiles(conn, req, resp);
              });
+
+    auto adminHandler = std::make_shared<AdminHandler>();
+    addRoute("/api/admin/stats", HttpRequest::kGet,
+             [adminHandler](const TcpConnectionPtr &conn, HttpRequest &req,
+                            std::shared_ptr<HttpResponse> &resp) {
+                 return adminHandler->handleStats(conn, req, resp);
+             });
+    addRoute("/api/admin/nodes", HttpRequest::kGet,
+             [adminHandler](const TcpConnectionPtr &conn, HttpRequest &req,
+                            std::shared_ptr<HttpResponse> &resp) {
+                 return adminHandler->handleNodes(conn, req, resp);
+             });
+    addRoute("/api/admin/nodes/([^/]+)/circuit-break", HttpRequest::kPost,
+             [adminHandler](const TcpConnectionPtr &conn, HttpRequest &req,
+                            std::shared_ptr<HttpResponse> &resp) {
+                 return adminHandler->handleNodeCircuitBreak(conn, req, resp);
+             },
+             {"node_id"});
+    addRoute("/api/admin/nodes/([^/]+)/bandwidth-limit", HttpRequest::kPost,
+             [adminHandler](const TcpConnectionPtr &conn, HttpRequest &req,
+                            std::shared_ptr<HttpResponse> &resp) {
+                 return adminHandler->handleNodeBandwidthLimit(conn, req, resp);
+             },
+             {"node_id"});
+    addRoute("/api/admin/policy", HttpRequest::kGet,
+             [adminHandler](const TcpConnectionPtr &conn, HttpRequest &req,
+                            std::shared_ptr<HttpResponse> &resp) {
+                 return adminHandler->handleGetPolicy(conn, req, resp);
+             });
+    addRoute("/api/admin/policy", HttpRequest::kPost,
+             [adminHandler](const TcpConnectionPtr &conn, HttpRequest &req,
+                            std::shared_ptr<HttpResponse> &resp) {
+                 return adminHandler->handleUpdatePolicy(conn, req, resp);
+             });
+    addRoute("/api/admin/users/active", HttpRequest::kGet,
+             [adminHandler](const TcpConnectionPtr &conn, HttpRequest &req,
+                            std::shared_ptr<HttpResponse> &resp) {
+                 return adminHandler->handleActiveUsers(conn, req, resp);
+             });
+    addRoute("/api/admin/traffic/history", HttpRequest::kGet,
+             [adminHandler](const TcpConnectionPtr &conn, HttpRequest &req,
+                            std::shared_ptr<HttpResponse> &resp) {
+                 return adminHandler->handleTrafficHistory(conn, req, resp);
+             });
 }
 
 // 🌟 重构后的 handleIndex：通用的静态 HTML 页面处理器
@@ -388,6 +575,8 @@ bool MasterHttpHandler::handleIndex(const TcpConnectionPtr &conn,
 
     if (path == "/" || path == "/index.html") {
         targetFile = "index.html";
+    } else if (path == "/admin.html") {
+        targetFile = "admin.html";
     } else if (path == "/register.html") {
         targetFile = "register.html";
     } else if (path.find("/s/") == 0) { // 匹配 /s/aB3x9Y 这种短链

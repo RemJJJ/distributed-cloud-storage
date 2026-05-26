@@ -1,0 +1,1281 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>分布式云存储管理后台</title>
+    <link rel="icon" type="image/x-icon" href="/favicon.ico">
+    <style>
+        :root {
+            --bg: #f4f8fc;
+            --panel: #ffffff;
+            --panel-soft: #f8fbff;
+            --text: #16324f;
+            --muted: #5e738c;
+            --border: #d9e5f1;
+            --primary: #1677ff;
+            --primary-deep: #0b57d0;
+            --danger: #dc2626;
+            --success: #16a34a;
+            --warning: #d97706;
+            --shadow: 0 16px 40px rgba(22, 50, 79, 0.08);
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+            background:
+                radial-gradient(circle at top left, rgba(22, 119, 255, 0.1), transparent 22%),
+                linear-gradient(180deg, #f6fbff 0%, #eef5fb 100%);
+            color: var(--text);
+        }
+
+        .hidden {
+            display: none !important;
+        }
+
+        .login-shell {
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 24px;
+        }
+
+        .login-card {
+            width: min(460px, calc(100vw - 32px));
+            padding: 30px 28px;
+            border-radius: 24px;
+            background: rgba(255, 255, 255, 0.96);
+            border: 1px solid rgba(217, 229, 241, 0.9);
+            box-shadow: 0 24px 48px rgba(22, 50, 79, 0.12);
+        }
+
+        .login-card h1 {
+            margin: 0 0 10px;
+            font-size: 30px;
+            color: var(--primary-deep);
+        }
+
+        .login-card p {
+            margin: 0 0 22px;
+            color: var(--muted);
+            line-height: 1.6;
+        }
+
+        .login-card .field input {
+            padding: 13px 14px;
+        }
+
+        .login-actions {
+            display: flex;
+            gap: 12px;
+            margin-top: 18px;
+        }
+
+        .login-actions .button {
+            flex: 1;
+        }
+
+        .login-error {
+            display: none;
+            margin-top: 14px;
+            padding: 11px 12px;
+            border-radius: 12px;
+            background: rgba(220, 38, 38, 0.08);
+            color: #b91c1c;
+            border: 1px solid rgba(220, 38, 38, 0.14);
+            font-size: 14px;
+        }
+
+        .page {
+            width: min(1400px, calc(100vw - 32px));
+            margin: 0 auto;
+            padding: 24px 0 32px;
+        }
+
+        .topbar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 16px;
+            margin-bottom: 22px;
+            padding: 22px 24px;
+            border-radius: 22px;
+            background: linear-gradient(135deg, #0f6bff, #0c4ed1);
+            color: #ffffff;
+            box-shadow: 0 24px 48px rgba(16, 77, 210, 0.22);
+        }
+
+        .title-wrap h1 {
+            margin: 0 0 8px;
+            font-size: 30px;
+        }
+
+        .title-wrap p {
+            margin: 0;
+            opacity: 0.92;
+        }
+
+        .topbar-actions {
+            display: flex;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+
+        .button {
+            border: none;
+            border-radius: 12px;
+            padding: 11px 16px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.18s ease, box-shadow 0.18s ease, background 0.18s ease;
+        }
+
+        .button:hover {
+            transform: translateY(-1px);
+        }
+
+        .button-primary {
+            background: #ffffff;
+            color: var(--primary-deep);
+            box-shadow: 0 10px 24px rgba(255, 255, 255, 0.18);
+        }
+
+        .button-secondary {
+            background: rgba(255, 255, 255, 0.14);
+            color: #ffffff;
+            border: 1px solid rgba(255, 255, 255, 0.18);
+        }
+
+        .button-danger {
+            background: rgba(220, 38, 38, 0.12);
+            color: var(--danger);
+        }
+
+        .button-success {
+            background: rgba(22, 163, 74, 0.12);
+            color: var(--success);
+        }
+
+        .status-bar {
+            display: none;
+            margin-bottom: 18px;
+            padding: 13px 16px;
+            border-radius: 14px;
+            background: rgba(22, 119, 255, 0.08);
+            color: var(--primary-deep);
+            border: 1px solid rgba(22, 119, 255, 0.18);
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            gap: 16px;
+            margin-bottom: 18px;
+        }
+
+        .stat-card,
+        .panel {
+            background: var(--panel);
+            border: 1px solid var(--border);
+            border-radius: 20px;
+            box-shadow: var(--shadow);
+        }
+
+        .stat-card {
+            padding: 18px 20px;
+        }
+
+        .stat-label {
+            font-size: 13px;
+            color: var(--muted);
+            margin-bottom: 10px;
+        }
+
+        .stat-value {
+            font-size: 30px;
+            font-weight: 700;
+            line-height: 1.1;
+            margin-bottom: 8px;
+        }
+
+        .stat-sub {
+            font-size: 13px;
+            color: var(--muted);
+        }
+
+        .layout {
+            display: grid;
+            grid-template-columns: minmax(0, 1.6fr) minmax(340px, 0.9fr);
+            gap: 18px;
+            margin-bottom: 18px;
+        }
+
+        .panel {
+            padding: 20px;
+        }
+
+        .panel h2 {
+            margin: 0 0 16px;
+            font-size: 20px;
+        }
+
+        .panel-head {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 16px;
+        }
+
+        .panel-head p {
+            margin: 4px 0 0;
+            color: var(--muted);
+            font-size: 13px;
+        }
+
+        .meta-text {
+            color: var(--muted);
+            font-size: 13px;
+        }
+
+        .table-wrap {
+            overflow-x: auto;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        th,
+        td {
+            padding: 12px 10px;
+            border-bottom: 1px solid #edf2f7;
+            text-align: left;
+            font-size: 14px;
+            vertical-align: middle;
+        }
+
+        th {
+            color: var(--muted);
+            font-weight: 600;
+            font-size: 13px;
+            background: var(--panel-soft);
+        }
+
+        .pill {
+            display: inline-flex;
+            align-items: center;
+            border-radius: 999px;
+            padding: 5px 10px;
+            font-size: 12px;
+            font-weight: 700;
+        }
+
+        .pill-online {
+            color: #047857;
+            background: rgba(16, 185, 129, 0.14);
+        }
+
+        .pill-offline {
+            color: #b91c1c;
+            background: rgba(239, 68, 68, 0.14);
+        }
+
+        .pill-disabled {
+            color: #92400e;
+            background: rgba(245, 158, 11, 0.18);
+        }
+
+        .policy-form {
+            display: grid;
+            gap: 14px;
+        }
+
+        .field {
+            display: grid;
+            gap: 7px;
+        }
+
+        .field label {
+            font-size: 14px;
+            font-weight: 600;
+        }
+
+        .field input,
+        .field select {
+            width: 100%;
+            padding: 11px 12px;
+            border-radius: 12px;
+            border: 1px solid var(--border);
+            font-size: 14px;
+            color: var(--text);
+            background: #ffffff;
+        }
+
+        .checkbox-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 12px;
+            border-radius: 14px;
+            background: var(--panel-soft);
+            border: 1px solid var(--border);
+        }
+
+        .checkbox-row input {
+            width: 16px;
+            height: 16px;
+        }
+
+        .traffic-panel {
+            margin-bottom: 18px;
+        }
+
+        .chart-wrap {
+            padding: 14px;
+            border-radius: 18px;
+            background: linear-gradient(180deg, #fbfdff, #f3f8ff);
+            border: 1px solid var(--border);
+        }
+
+        #traffic-chart {
+            width: 100%;
+            height: 260px;
+            display: block;
+        }
+
+        .chart-legend {
+            display: flex;
+            gap: 18px;
+            margin-top: 12px;
+            color: var(--muted);
+            font-size: 13px;
+        }
+
+        .legend-item {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .legend-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+        }
+
+        .empty {
+            padding: 20px 0;
+            text-align: center;
+            color: var(--muted);
+        }
+
+        .danger-text {
+            color: var(--danger);
+        }
+
+        .success-text {
+            color: var(--success);
+        }
+
+        .node-limit-editor {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        .node-limit-editor input {
+            width: 96px;
+            padding: 8px 10px;
+            border-radius: 10px;
+            border: 1px solid #d9e5f1;
+            background: #f8fbff;
+        }
+
+        .node-limit-editor input.dirty {
+            border-color: var(--warning);
+            background: #fffaf0;
+            box-shadow: 0 0 0 3px rgba(217, 119, 6, 0.1);
+        }
+
+        .node-limit-draft {
+            color: var(--warning);
+            font-weight: 600;
+        }
+
+        @media (max-width: 1120px) {
+            .stats-grid {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+            }
+
+            .layout {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        @media (max-width: 720px) {
+            .page {
+                width: min(100vw - 18px, 1400px);
+                padding-top: 16px;
+            }
+
+            .topbar {
+                flex-direction: column;
+                align-items: flex-start;
+            }
+
+            .stats-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .topbar-actions {
+                width: 100%;
+            }
+
+            .topbar-actions .button {
+                flex: 1;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div id="admin-login-view" class="login-shell">
+        <div class="login-card">
+            <h1>管理员登录</h1>
+            <p>请使用管理员账号登录后进入集群治理中心。这里不会跳转到普通用户页面。</p>
+
+            <div class="field">
+                <label for="admin-username">用户名</label>
+                <input id="admin-username" type="text" placeholder="请输入管理员用户名">
+            </div>
+
+            <div class="field">
+                <label for="admin-password">密码</label>
+                <input id="admin-password" type="password" placeholder="请输入密码">
+            </div>
+
+            <div class="login-actions">
+                <button class="button button-primary" onclick="loginAdmin()">登录管理后台</button>
+                <button class="button button-secondary" onclick="goBack()" style="color:#0b57d0; background:#eef5ff; border:1px solid #d9e5f1;">返回用户首页</button>
+            </div>
+
+            <div id="login-error" class="login-error"></div>
+        </div>
+    </div>
+
+    <div id="admin-dashboard" class="page hidden">
+        <div class="topbar">
+            <div class="title-wrap">
+                <h1>集群全局治理中心</h1>
+                <p>管理员可在这里查看节点运行状态、注入全局策略，并审计当前活跃用户传输。</p>
+            </div>
+            <div class="topbar-actions">
+                <button class="button button-primary" onclick="goBack()">返回用户首页</button>
+                <button class="button button-secondary" onclick="refreshAll()">立即刷新</button>
+                <button class="button button-secondary" onclick="logoutAdmin()">退出登录</button>
+            </div>
+        </div>
+
+        <div id="status-bar" class="status-bar"></div>
+
+        <div class="stats-grid">
+            <div class="stat-card">
+                <div class="stat-label">在线节点数</div>
+                <div class="stat-value" id="online-nodes">-</div>
+                <div class="stat-sub" id="online-nodes-sub">总节点数 -</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">总活跃连接数</div>
+                <div class="stat-value" id="active-connections">-</div>
+                <div class="stat-sub" id="qos-mode-sub">QoS 模式 -</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">总上传速率</div>
+                <div class="stat-value" id="upload-rate">-</div>
+                <div class="stat-sub" id="upload-rate-sub">集群总磁盘容量 -</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">总下载速率</div>
+                <div class="stat-value" id="download-rate">-</div>
+                <div class="stat-sub" id="download-rate-sub">带宽上限 -</div>
+            </div>
+        </div>
+
+        <div class="layout">
+            <div class="panel">
+                <div class="panel-head">
+                    <div>
+                        <h2>节点全景视图</h2>
+                        <p>查看所有 DataNode 在线状态、磁盘占用、实时连接数，并支持手动熔断。</p>
+                    </div>
+                    <div class="meta-text" id="nodes-updated-at">最近刷新：-</div>
+                </div>
+                <div class="table-wrap">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>节点 ID</th>
+                                <th>地址</th>
+                                <th>状态</th>
+                                <th>磁盘使用率</th>
+                                <th>活跃连接</th>
+                                <th>上传/下载速率</th>
+                                <th>连接用户数</th>
+                                <th>节点带宽上限</th>
+                                <th>操作</th>
+                            </tr>
+                        </thead>
+                        <tbody id="nodes-table-body">
+                            <tr><td colspan="9" class="empty">正在加载节点数据...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div class="panel">
+                <div class="panel-head">
+                    <div>
+                        <h2>全局策略注入</h2>
+                        <p>支持手动接管 QoS 模式，并下发集群总带宽上限给所有节点。</p>
+                    </div>
+                </div>
+                <div class="policy-form">
+                    <div class="checkbox-row">
+                        <input type="checkbox" id="manual-override">
+                        <label for="manual-override">启用管理员手动接管 QoS 模式</label>
+                    </div>
+
+                    <div class="field">
+                        <label for="qos-mode">QoS 模式</label>
+                        <select id="qos-mode">
+                            <option value="elastic">Elastic 弹性全速</option>
+                            <option value="strict">Strict 严格限速</option>
+                        </select>
+                    </div>
+
+                    <div class="field">
+                        <label for="bandwidth-limit">全局带宽上限（Mbps，0 表示不限速）</label>
+                        <input id="bandwidth-limit" type="number" min="0" step="1" value="0" placeholder="例如 200">
+                    </div>
+
+                    <div class="field">
+                        <label for="strict-enter-threshold">进入 Strict 模式并发连接阈值</label>
+                        <input id="strict-enter-threshold" type="number" min="1" step="1" value="10" placeholder="例如 10">
+                    </div>
+
+                    <div class="field">
+                        <label for="strict-exit-threshold">退出 Strict 模式并发连接阈值</label>
+                        <input id="strict-exit-threshold" type="number" min="0" step="1" value="5" placeholder="例如 5">
+                    </div>
+
+                    <button class="button button-primary" onclick="savePolicy()">保存全局策略</button>
+                    <div class="meta-text" id="policy-summary">当前策略：跟随集群负载自动切换</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="panel traffic-panel">
+            <div class="panel-head">
+                <div>
+                    <h2>实时流量监控</h2>
+                    <p>轮询最近 60 秒的集群上传/下载速率，帮助观察负载变化与策略生效情况。</p>
+                </div>
+                <div class="meta-text" id="traffic-updated-at">最近刷新：-</div>
+            </div>
+            <div class="chart-wrap">
+                <canvas id="traffic-chart" width="1200" height="260"></canvas>
+                <div class="chart-legend">
+                    <span class="legend-item"><span class="legend-dot" style="background:#1677ff;"></span>上传速率</span>
+                    <span class="legend-item"><span class="legend-dot" style="background:#16a34a;"></span>下载速率</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="panel">
+            <div class="panel-head">
+                <div>
+                    <h2>用户审计</h2>
+                    <p>展示当前连接到集群的用户、所在节点、传输类型与实时速率。</p>
+                </div>
+                <div class="meta-text" id="users-updated-at">最近刷新：-</div>
+            </div>
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>用户</th>
+                            <th>等级 / 场景</th>
+                            <th>节点</th>
+                            <th>传输类型</th>
+                            <th>文件</th>
+                            <th>实时速率</th>
+                            <th>开始时间</th>
+                        </tr>
+                    </thead>
+                    <tbody id="users-table-body">
+                        <tr><td colspan="7" class="empty">正在加载活跃用户数据...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const ADMIN_TOKEN_KEY = 'admin_token';
+        const ADMIN_USERNAME_KEY = 'admin_username';
+        let token = localStorage.getItem(ADMIN_TOKEN_KEY) || '';
+        let statsTimer = null;
+        let nodesTimer = null;
+        let usersTimer = null;
+        let trafficTimer = null;
+        let policyLoading = false;
+        let trafficPoints = [];
+        const nodeBandwidthDrafts = new Map();
+        const pollInFlight = new Map();
+        const ADMIN_REQUEST_TIMEOUT_MS = 5000;
+        const ADMIN_POLL_TIMEOUT_MS = 850;
+        const BYTES_PER_MEGABIT = 1000 * 1000 / 8;
+
+        function showLoginError(message) {
+            const box = document.getElementById('login-error');
+            box.textContent = message;
+            box.style.display = 'block';
+        }
+
+        function clearLoginError() {
+            const box = document.getElementById('login-error');
+            box.textContent = '';
+            box.style.display = 'none';
+        }
+
+        function showLoginView(message = '') {
+            stopPolling();
+            document.getElementById('admin-login-view').classList.remove('hidden');
+            document.getElementById('admin-dashboard').classList.add('hidden');
+            clearStatus();
+            const savedAdminUsername = localStorage.getItem(ADMIN_USERNAME_KEY) || '';
+            document.getElementById('admin-username').value = savedAdminUsername;
+            document.getElementById('admin-password').value = '';
+            if (message) {
+                showLoginError(message);
+            } else {
+                clearLoginError();
+            }
+        }
+
+        function showDashboardView() {
+            clearLoginError();
+            document.getElementById('admin-login-view').classList.add('hidden');
+            document.getElementById('admin-dashboard').classList.remove('hidden');
+        }
+
+        function showStatus(message, type = 'info') {
+            const statusBar = document.getElementById('status-bar');
+            statusBar.style.display = 'block';
+            statusBar.textContent = message;
+            if (type === 'error') {
+                statusBar.style.background = 'rgba(220, 38, 38, 0.1)';
+                statusBar.style.color = '#b91c1c';
+                statusBar.style.borderColor = 'rgba(220, 38, 38, 0.18)';
+            } else if (type === 'success') {
+                statusBar.style.background = 'rgba(22, 163, 74, 0.1)';
+                statusBar.style.color = '#166534';
+                statusBar.style.borderColor = 'rgba(22, 163, 74, 0.18)';
+            } else {
+                statusBar.style.background = 'rgba(22, 119, 255, 0.08)';
+                statusBar.style.color = '#0b57d0';
+                statusBar.style.borderColor = 'rgba(22, 119, 255, 0.18)';
+            }
+        }
+
+        function clearStatus() {
+            const statusBar = document.getElementById('status-bar');
+            statusBar.style.display = 'none';
+            statusBar.textContent = '';
+        }
+
+        function formatTime(date = new Date()) {
+            return date.toLocaleTimeString('zh-CN', { hour12: false });
+        }
+
+        function formatBytes(bytes) {
+            const value = Number(bytes) || 0;
+            if (value < 1024) return value + ' B';
+            if (value < 1024 * 1024) return (value / 1024).toFixed(1) + ' KB';
+            if (value < 1024 * 1024 * 1024) return (value / (1024 * 1024)).toFixed(1) + ' MB';
+            return (value / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
+        }
+
+        function formatRate(bps) {
+            return formatBytes(bps) + '/s';
+        }
+
+        function bytesPerSecondToMbps(bytesPerSecond) {
+            const value = Number(bytesPerSecond) || 0;
+            return value <= 0 ? 0 : value / BYTES_PER_MEGABIT;
+        }
+
+        function mbpsToBytesPerSecond(mbps) {
+            const value = Number(mbps) || 0;
+            return value <= 0 ? 0 : Math.round(value * BYTES_PER_MEGABIT);
+        }
+
+        function formatMbpsLimit(bytesPerSecond) {
+            const mbps = bytesPerSecondToMbps(bytesPerSecond);
+            return mbps > 0 ? mbps.toFixed(mbps >= 100 ? 0 : 1) + ' Mbps' : '未设置';
+        }
+
+        function formatPercent(value) {
+            const num = Number(value) || 0;
+            return num.toFixed(1) + '%';
+        }
+
+        function escapeHtml(text) {
+            return String(text || '').replace(/[&<>"']/g, function (char) {
+                return ({
+                    '&': '&amp;',
+                    '<': '&lt;',
+                    '>': '&gt;',
+                    '"': '&quot;',
+                    "'": '&#39;'
+                })[char];
+            });
+        }
+
+        function authHeaders() {
+            return {
+                'Authorization': 'Bearer ' + token,
+                'Content-Type': 'application/json'
+            };
+        }
+
+        async function apiFetch(url, options = {}) {
+            const timeoutMs = Number(options.timeoutMs || ADMIN_REQUEST_TIMEOUT_MS);
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+            const { timeoutMs: _timeoutMs, ...fetchOptions } = options;
+
+            let resp;
+            try {
+                resp = await fetch(url, {
+                    ...fetchOptions,
+                    signal: fetchOptions.signal || controller.signal,
+                    cache: fetchOptions.cache || 'no-store',
+                    headers: {
+                        ...authHeaders(),
+                        ...(fetchOptions.headers || {})
+                    }
+                });
+            } catch (error) {
+                if (error.name === 'AbortError') {
+                    throw new Error('request_timeout');
+                }
+                throw error;
+            } finally {
+                clearTimeout(timeoutId);
+            }
+
+            let data = {};
+            try {
+                data = await resp.json();
+            } catch (error) {
+                data = {};
+            }
+
+            if (resp.status === 401 || resp.status === 403) {
+                token = '';
+                localStorage.removeItem(ADMIN_TOKEN_KEY);
+                showLoginView('管理员权限校验失败，请重新登录管理员账号。');
+                throw new Error('unauthorized');
+            }
+
+            if (!resp.ok || (typeof data.code !== 'undefined' && data.code !== 0)) {
+                throw new Error(data.message || ('请求失败：' + resp.status));
+            }
+
+            return data;
+        }
+
+        async function pollSafely(key, task) {
+            if (pollInFlight.get(key)) {
+                return;
+            }
+            pollInFlight.set(key, true);
+            try {
+                await task();
+            } catch (error) {
+                if (error.message === 'unauthorized') {
+                    return;
+                }
+                if (error.message !== 'request_timeout') {
+                    console.warn('Admin polling failed:', key, error);
+                }
+            } finally {
+                pollInFlight.set(key, false);
+            }
+        }
+
+        function goBack() {
+            window.location.href = '/index.html';
+        }
+
+        async function logoutAdmin() {
+            try {
+                await fetch('/logout', {
+                    method: 'POST',
+                    headers: { 'Authorization': 'Bearer ' + token }
+                });
+            } catch (error) {
+            }
+            localStorage.removeItem(ADMIN_TOKEN_KEY);
+            token = '';
+            showLoginView();
+        }
+
+        function renderStats(stats) {
+            document.getElementById('online-nodes').textContent = stats.onlineNodes;
+            document.getElementById('online-nodes-sub').textContent = '总节点数 ' + stats.totalNodes;
+            document.getElementById('active-connections').textContent = stats.totalActiveConnections;
+            document.getElementById('qos-mode-sub').textContent =
+                'QoS 模式 ' + (stats.qosMode === 'strict' ? 'Strict 严格限速' : 'Elastic 弹性全速') +
+                (stats.manualQosOverride ? '（管理员接管）' : '（自动）');
+            document.getElementById('upload-rate').textContent = formatRate(stats.totalUploadBps);
+            document.getElementById('upload-rate-sub').textContent =
+                '集群容量 ' + formatBytes(stats.totalDiskBytes - stats.totalDiskFreeBytes) + ' / ' + formatBytes(stats.totalDiskBytes);
+            document.getElementById('download-rate').textContent = formatRate(stats.totalDownloadBps);
+            document.getElementById('download-rate-sub').textContent =
+                '带宽上限 ' + formatMbpsLimit(stats.globalBandwidthLimitBps);
+        }
+
+        function recordNodeBandwidthDraft(encodedNodeId, value) {
+            const nodeId = decodeURIComponent(encodedNodeId);
+            nodeBandwidthDrafts.set(nodeId, value);
+            const input = document.getElementById('node-limit-' + nodeId);
+            if (input) {
+                input.classList.add('dirty');
+            }
+        }
+
+        function renderNodes(nodes) {
+            const tbody = document.getElementById('nodes-table-body');
+            if (!Array.isArray(nodes) || nodes.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="9" class="empty">当前没有注册的 DataNode 节点。</td></tr>';
+                return;
+            }
+
+            const activeEl = document.activeElement;
+            const activeInputId = activeEl && activeEl.id && activeEl.id.startsWith('node-limit-')
+                ? activeEl.id
+                : '';
+            const activeSelectionStart = activeInputId ? activeEl.selectionStart : null;
+            const activeSelectionEnd = activeInputId ? activeEl.selectionEnd : null;
+
+            tbody.innerHTML = nodes.map(node => {
+                const aliveBadge = node.isAlive
+                    ? '<span class="pill pill-online">在线</span>'
+                    : '<span class="pill pill-offline">离线</span>';
+                const disabledBadge = node.isManuallyDisabled
+                    ? ' <span class="pill pill-disabled">已熔断</span>'
+                    : '';
+                const actionLabel = node.isManuallyDisabled ? '恢复分配' : '熔断节点';
+                const actionClass = node.isManuallyDisabled ? 'button-success' : 'button-danger';
+                const nodeId = String(node.nodeId || '');
+                const encodedNodeId = encodeURIComponent(nodeId);
+                const savedLimitMbps = Math.round(bytesPerSecondToMbps(node.nodeBandwidthLimitBps || 0));
+                const hasDraft = nodeBandwidthDrafts.has(nodeId);
+                const inputValue = hasDraft ? nodeBandwidthDrafts.get(nodeId) : savedLimitMbps;
+                const draftText = hasDraft
+                    ? `<div class="meta-text node-limit-draft">待确认：${escapeHtml(inputValue)} Mbps</div>`
+                    : '';
+                return `
+                    <tr>
+                        <td>${escapeHtml(node.nodeId)}</td>
+                        <td>
+                            <div>${escapeHtml(node.ip)}</div>
+                            <div class="meta-text">${escapeHtml(node.publicUrl || '未配置公网地址')}</div>
+                        </td>
+                        <td>${aliveBadge}${disabledBadge}</td>
+                        <td>${formatPercent(node.diskUsagePercent)}</td>
+                        <td>${node.activeConnections}</td>
+                        <td>${formatRate(node.uploadBps)} / ${formatRate(node.downloadBps)}</td>
+                        <td>${node.connectedUsers}</td>
+                        <td>
+                            <div class="node-limit-editor">
+                                <input id="node-limit-${escapeHtml(nodeId)}" class="${hasDraft ? 'dirty' : ''}" type="text" inputmode="decimal"
+                                    value="${escapeHtml(inputValue)}"
+                                    placeholder="Mbps"
+                                    oninput="recordNodeBandwidthDraft('${encodedNodeId}', this.value)">
+                                <button class="button button-primary"
+                                    onclick="saveNodeBandwidthLimit('${encodedNodeId}')">确认修改</button>
+                            </div>
+                            <div class="meta-text">当前：${formatMbpsLimit(node.nodeBandwidthLimitBps)}</div>
+                            ${draftText}
+                        </td>
+                        <td>
+                            <button class="button ${actionClass}" onclick="toggleNode('${encodedNodeId}', ${node.isManuallyDisabled ? 'false' : 'true'})">
+                                ${actionLabel}
+                            </button>
+                        </td>
+                    </tr>
+                `;
+            }).join('');
+
+            if (activeInputId) {
+                const restoredInput = document.getElementById(activeInputId);
+                if (restoredInput) {
+                    restoredInput.focus();
+                    const cursorStart = activeSelectionStart === null
+                        ? restoredInput.value.length
+                        : Math.min(activeSelectionStart, restoredInput.value.length);
+                    const cursorEnd = activeSelectionEnd === null
+                        ? cursorStart
+                        : Math.min(activeSelectionEnd, restoredInput.value.length);
+                    if (typeof restoredInput.setSelectionRange === 'function') {
+                        restoredInput.setSelectionRange(cursorStart, cursorEnd);
+                    }
+                }
+            }
+        }
+
+        function renderUsers(users) {
+            const tbody = document.getElementById('users-table-body');
+            if (!Array.isArray(users) || users.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="7" class="empty">当前没有活跃传输用户。</td></tr>';
+                return;
+            }
+
+            tbody.innerHTML = users.map(user => `
+                <tr>
+                    <td>${escapeHtml(user.username)} <span class="meta-text">#${user.userId}</span></td>
+                    <td>${escapeHtml((user.serviceLevel || 'normal').toUpperCase())} / ${escapeHtml(user.sceneTag || 'general')}</td>
+                    <td>${escapeHtml(user.nodeId || '-')}</td>
+                    <td>${escapeHtml(user.transferType || '-')}</td>
+                    <td>${escapeHtml(user.fileName || '-')}</td>
+                    <td>${formatRate(user.currentBps)}</td>
+                    <td>${escapeHtml(user.startedAt || '-')}</td>
+                </tr>
+            `).join('');
+        }
+
+        function renderPolicy(policy) {
+            if (policyLoading) {
+                return;
+            }
+            document.getElementById('manual-override').checked = !!policy.manualQosOverride;
+            document.getElementById('qos-mode').value = policy.qosMode || 'elastic';
+            const limitMbps = bytesPerSecondToMbps(policy.globalBandwidthLimitBps || 0);
+            document.getElementById('bandwidth-limit').value = Number.isFinite(limitMbps) ? Math.round(limitMbps) : 0;
+            document.getElementById('strict-enter-threshold').value =
+                Number.isFinite(Number(policy.strictEnterActiveTransfers))
+                    ? Number(policy.strictEnterActiveTransfers)
+                    : 10;
+            document.getElementById('strict-exit-threshold').value =
+                Number.isFinite(Number(policy.strictExitActiveTransfers))
+                    ? Number(policy.strictExitActiveTransfers)
+                    : 5;
+            document.getElementById('policy-summary').textContent =
+                '当前策略：' +
+                (policy.manualQosOverride
+                    ? ((policy.qosMode === 'strict' ? 'Strict 严格限速' : 'Elastic 弹性全速') + '（管理员手动接管）')
+                    : '跟随集群负载自动切换') +
+                '，带宽上限：' + formatMbpsLimit(policy.globalBandwidthLimitBps) +
+                `，Strict 进入/退出阈值：${policy.strictEnterActiveTransfers ?? '-'} / ${policy.strictExitActiveTransfers ?? '-'}`;
+        }
+
+        function drawTrafficChart(points) {
+            const canvas = document.getElementById('traffic-chart');
+            const ctx = canvas.getContext('2d');
+            const width = canvas.width;
+            const height = canvas.height;
+            const padding = { top: 18, right: 24, bottom: 34, left: 64 };
+            ctx.clearRect(0, 0, width, height);
+
+            ctx.fillStyle = '#f3f8ff';
+            ctx.fillRect(0, 0, width, height);
+
+            const safePoints = Array.isArray(points) ? points : [];
+            const chartWidth = width - padding.left - padding.right;
+            const chartHeight = height - padding.top - padding.bottom;
+            const maxValue = Math.max(
+                1,
+                ...safePoints.map(point => Math.max(Number(point.uploadBps) || 0, Number(point.downloadBps) || 0))
+            );
+
+            ctx.strokeStyle = '#d5e3f1';
+            ctx.lineWidth = 1;
+            ctx.font = '12px Segoe UI';
+            ctx.fillStyle = '#5e738c';
+
+            for (let i = 0; i <= 4; i++) {
+                const y = padding.top + (chartHeight / 4) * i;
+                ctx.beginPath();
+                ctx.moveTo(padding.left, y);
+                ctx.lineTo(width - padding.right, y);
+                ctx.stroke();
+
+                const value = maxValue * (1 - i / 4);
+                ctx.fillText(formatRate(value), 8, y + 4);
+            }
+
+            if (safePoints.length === 0) {
+                ctx.fillStyle = '#5e738c';
+                ctx.fillText('暂无流量数据', width / 2 - 28, height / 2);
+                return;
+            }
+
+            function drawLine(field, color) {
+                ctx.beginPath();
+                safePoints.forEach((point, index) => {
+                    const x = padding.left + (safePoints.length === 1 ? 0 : (chartWidth / (safePoints.length - 1)) * index);
+                    const y = padding.top + chartHeight - ((Number(point[field]) || 0) / maxValue) * chartHeight;
+                    if (index === 0) {
+                        ctx.moveTo(x, y);
+                    } else {
+                        ctx.lineTo(x, y);
+                    }
+                });
+                ctx.strokeStyle = color;
+                ctx.lineWidth = 3;
+                ctx.stroke();
+            }
+
+            drawLine('uploadBps', '#1677ff');
+            drawLine('downloadBps', '#16a34a');
+
+            ctx.fillStyle = '#7c8ea4';
+            const firstTs = new Date(safePoints[0].timestampMs || Date.now());
+            const lastTs = new Date(safePoints[safePoints.length - 1].timestampMs || Date.now());
+            ctx.fillText(firstTs.toLocaleTimeString('zh-CN', { hour12: false }), padding.left, height - 10);
+            ctx.fillText(lastTs.toLocaleTimeString('zh-CN', { hour12: false }), width - padding.right - 66, height - 10);
+        }
+
+        async function fetchStats(timeoutMs = ADMIN_POLL_TIMEOUT_MS) {
+            const data = await apiFetch('/api/admin/stats', { timeoutMs });
+            renderStats(data.data || {});
+        }
+
+        async function fetchNodes(timeoutMs = ADMIN_POLL_TIMEOUT_MS) {
+            const data = await apiFetch('/api/admin/nodes', { timeoutMs });
+            renderNodes((data.data || {}).nodes || []);
+            document.getElementById('nodes-updated-at').textContent = '最近刷新：' + formatTime();
+        }
+
+        async function fetchPolicy(timeoutMs = ADMIN_POLL_TIMEOUT_MS) {
+            const data = await apiFetch('/api/admin/policy', { timeoutMs });
+            renderPolicy(data.data || {});
+        }
+
+        async function fetchUsers(timeoutMs = ADMIN_POLL_TIMEOUT_MS) {
+            const data = await apiFetch('/api/admin/users/active', { timeoutMs });
+            renderUsers((data.data || {}).users || []);
+            document.getElementById('users-updated-at').textContent = '最近刷新：' + formatTime();
+        }
+
+        async function fetchTraffic(timeoutMs = ADMIN_POLL_TIMEOUT_MS) {
+            const data = await apiFetch('/api/admin/traffic/history?window=60', { timeoutMs });
+            trafficPoints = (data.data || {}).points || [];
+            drawTrafficChart(trafficPoints);
+            document.getElementById('traffic-updated-at').textContent = '最近刷新：' + formatTime();
+        }
+
+        async function savePolicy() {
+            policyLoading = true;
+            try {
+                const manualOverride = document.getElementById('manual-override').checked;
+                const qosMode = document.getElementById('qos-mode').value;
+                const limitMbps = Number(document.getElementById('bandwidth-limit').value || 0);
+                const strictEnter = Number(document.getElementById('strict-enter-threshold').value || 0);
+                const strictExit = Number(document.getElementById('strict-exit-threshold').value || 0);
+                if (!Number.isInteger(strictEnter) || !Number.isInteger(strictExit) ||
+                    strictEnter < 1 || strictExit < 0 || strictExit > strictEnter) {
+                    showStatus('QoS 阈值无效：进入阈值必须 >=1，退出阈值必须在 0 到进入阈值之间。', 'error');
+                    return;
+                }
+                const payload = {
+                    manualQosOverride: manualOverride,
+                    qosMode: qosMode,
+                    globalBandwidthLimitBps: mbpsToBytesPerSecond(limitMbps),
+                    strictEnterActiveTransfers: strictEnter,
+                    strictExitActiveTransfers: strictExit
+                };
+                await apiFetch('/api/admin/policy', {
+                    method: 'POST',
+                    body: JSON.stringify(payload)
+                });
+                showStatus('全局策略已更新，新的策略会在 DataNode 心跳响应中同步下发。', 'success');
+                await Promise.all([
+                    fetchPolicy(ADMIN_REQUEST_TIMEOUT_MS),
+                    fetchStats(ADMIN_REQUEST_TIMEOUT_MS)
+                ]);
+            } catch (error) {
+                showStatus(error.message || '保存策略失败', 'error');
+            } finally {
+                policyLoading = false;
+            }
+        }
+
+        async function saveNodeBandwidthLimit(encodedNodeId) {
+            const nodeId = decodeURIComponent(encodedNodeId);
+            const input = document.getElementById('node-limit-' + nodeId);
+            if (!input) {
+                return;
+            }
+            try {
+                const limitMbps = Number(input.value || 0);
+                if (!Number.isFinite(limitMbps) || limitMbps < 0) {
+                    showStatus('节点带宽上限必须是大于等于 0 的 Mbps 数值。', 'error');
+                    return;
+                }
+                await apiFetch('/api/admin/nodes/' + encodeURIComponent(nodeId) + '/bandwidth-limit', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        nodeBandwidthLimitBps: mbpsToBytesPerSecond(limitMbps)
+                    })
+                });
+                nodeBandwidthDrafts.delete(nodeId);
+                showStatus('已更新节点带宽上限：' + nodeId, 'success');
+                await Promise.all([
+                    fetchNodes(ADMIN_REQUEST_TIMEOUT_MS),
+                    fetchStats(ADMIN_REQUEST_TIMEOUT_MS)
+                ]);
+            } catch (error) {
+                showStatus(error.message || '更新节点带宽上限失败', 'error');
+            }
+        }
+
+        async function toggleNode(encodedNodeId, disabled) {
+            const nodeId = decodeURIComponent(encodedNodeId);
+            try {
+                await apiFetch('/api/admin/nodes/' + encodeURIComponent(nodeId) + '/circuit-break', {
+                    method: 'POST',
+                    body: JSON.stringify({ disabled: !!disabled })
+                });
+                showStatus((disabled ? '已熔断节点：' : '已恢复节点：') + nodeId, 'success');
+                await Promise.all([
+                    fetchNodes(ADMIN_REQUEST_TIMEOUT_MS),
+                    fetchStats(ADMIN_REQUEST_TIMEOUT_MS)
+                ]);
+            } catch (error) {
+                showStatus(error.message || '更新节点状态失败', 'error');
+            }
+        }
+
+        async function refreshAll() {
+            try {
+                clearStatus();
+                await Promise.all([
+                    fetchStats(ADMIN_REQUEST_TIMEOUT_MS),
+                    fetchNodes(ADMIN_REQUEST_TIMEOUT_MS),
+                    fetchPolicy(ADMIN_REQUEST_TIMEOUT_MS),
+                    fetchUsers(ADMIN_REQUEST_TIMEOUT_MS),
+                    fetchTraffic(ADMIN_REQUEST_TIMEOUT_MS)
+                ]);
+                return true;
+            } catch (error) {
+                if (error.message === 'unauthorized') {
+                    throw error;
+                }
+                showStatus(error.message || '刷新失败', 'error');
+                return false;
+            }
+        }
+
+        function startPolling() {
+            statsTimer = setInterval(() => pollSafely('stats', fetchStats), 1000);
+            nodesTimer = setInterval(() => pollSafely('nodes', fetchNodes), 1000);
+            usersTimer = setInterval(() => pollSafely('users', fetchUsers), 1000);
+            trafficTimer = setInterval(() => pollSafely('traffic', fetchTraffic), 1000);
+        }
+
+        function stopPolling() {
+            clearInterval(statsTimer);
+            clearInterval(nodesTimer);
+            clearInterval(usersTimer);
+            clearInterval(trafficTimer);
+        }
+
+        async function loginAdmin() {
+            const username = document.getElementById('admin-username').value.trim();
+            const password = document.getElementById('admin-password').value;
+            if (!username || !password) {
+                showLoginError('请输入管理员用户名和密码。');
+                return;
+            }
+
+            clearLoginError();
+            try {
+                const resp = await fetch('/login', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        username: username,
+                        password: password
+                    })
+                });
+                const data = await resp.json();
+                if (!resp.ok || data.code !== 0) {
+                    showLoginError(data.message || '登录失败，请检查用户名或密码。');
+                    return;
+                }
+                if (!data.isAdmin) {
+                    showLoginError('该账号不是管理员，无法进入治理后台。');
+                    return;
+                }
+
+                token = data.token || '';
+                localStorage.setItem(ADMIN_TOKEN_KEY, token);
+                localStorage.setItem(ADMIN_USERNAME_KEY, username);
+
+                showDashboardView();
+                const ok = await refreshAll();
+                if (ok) {
+                    startPolling();
+                }
+            } catch (error) {
+                showLoginError('登录请求失败，请稍后重试。');
+            }
+        }
+
+        async function tryResumeAdminSession() {
+            if (!token) {
+                showLoginView();
+                return;
+            }
+            showDashboardView();
+            try {
+                const ok = await refreshAll();
+                if (ok) {
+                    startPolling();
+                }
+            } catch (error) {
+                if (error.message !== 'unauthorized') {
+                    showLoginView('管理员会话校验失败，请重新登录。');
+                }
+            }
+        }
+
+        window.addEventListener('beforeunload', stopPolling);
+        document.getElementById('admin-password').addEventListener('keydown', function (event) {
+            if (event.key === 'Enter') {
+                loginAdmin();
+            }
+        });
+
+        window.addEventListener('load', async () => {
+            await tryResumeAdminSession();
+        });
+    </script>
+</body>
+</html>

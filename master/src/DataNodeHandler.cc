@@ -128,11 +128,31 @@ bool DataNodeHandler::handleHeartbeat(const fn::TcpConnectionPtr &conn,
         int active_downloads = jsonData.value("active_downloads", 0);
         int active_transfers = jsonData.value(
             "active_transfers", active_uploads + active_downloads);
+        uint64_t upload_bps = jsonData.value("upload_bps", 0ULL);
+        uint64_t download_bps = jsonData.value("download_bps", 0ULL);
+        int connected_users = jsonData.value("connected_users", 0);
+        std::vector<ActiveUserSessionInfo> activeUsers;
+        for (const auto &sessionJson :
+             jsonData.value("active_user_sessions", json::array())) {
+            ActiveUserSessionInfo session;
+            session.userId_ = sessionJson.value("user_id", 0);
+            session.username_ = sessionJson.value("username", "");
+            session.serviceLevel_ =
+                sessionJson.value("service_level", "normal");
+            session.sceneTag_ = sessionJson.value("scene_tag", "general");
+            session.transferType_ =
+                sessionJson.value("transfer_type", "download");
+            session.fileName_ = sessionJson.value("file_name", "");
+            session.currentBps_ = sessionJson.value("current_bps", 0ULL);
+            session.startedAt_ = sessionJson.value("started_at", "");
+            activeUsers.push_back(std::move(session));
+        }
 
         fn::InetAddress newAddr(node_ip, node_port);
         NodeManager::instance().updateHeartbeat(
             node_id, newAddr, disk_total, disk_free, active_uploads,
-            active_downloads, active_transfers, public_url);
+            active_downloads, active_transfers, upload_bps, download_bps,
+            connected_users, activeUsers, public_url);
 
         LOG_INFO << "update heartbeat success:" << node_id << " @ "
                  << newAddr.toIpPort();
@@ -150,8 +170,18 @@ bool DataNodeHandler::handleHeartbeat(const fn::TcpConnectionPtr &conn,
 
     resp->setStatusCode(fn::HttpResponse::k200Ok);
     resp->setContentType("application/json");
+    auto adminPolicy = NodeManager::instance().getAdminPolicySnapshot(node_id);
     nlohmann::json respJson = {
-        {"code", 0}, {"message", "心跳成功"}, {"node_id", node_id}};
+        {"code", 0},
+        {"message", "心跳成功"},
+        {"node_id", node_id},
+        {"admin_policy",
+         {{"qos_mode", adminPolicy.qosMode},
+          {"manual_override", adminPolicy.manualOverride},
+          {"global_bandwidth_limit_bps",
+           adminPolicy.globalBandwidthLimitBps},
+          {"node_bandwidth_limit_bps",
+           adminPolicy.nodeBandwidthLimitBps}}}};
     resp->setBody(respJson.dump());
     return true;
 }

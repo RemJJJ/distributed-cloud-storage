@@ -31,6 +31,9 @@ class FileHandler : public handlerUtils {
     bool handleDeleteFile(const fileserver::net::TcpConnectionPtr &conn,
                           fileserver::net::HttpRequest &req,
                           std::shared_ptr<fileserver::net::HttpResponse> &resp);
+    bool handleBatchDelete(const fileserver::net::TcpConnectionPtr &conn,
+                           fileserver::net::HttpRequest &req,
+                           std::shared_ptr<fileserver::net::HttpResponse> &resp);
 
     bool
     handleListRecycleBin(const fileserver::net::TcpConnectionPtr &conn,
@@ -45,6 +48,10 @@ class FileHandler : public handlerUtils {
     bool handleHardDelete(const fileserver::net::TcpConnectionPtr &conn,
                           fileserver::net::HttpRequest &req,
                           std::shared_ptr<fileserver::net::HttpResponse> &resp);
+    bool handleBatchHardDelete(
+        const fileserver::net::TcpConnectionPtr &conn,
+        fileserver::net::HttpRequest &req,
+        std::shared_ptr<fileserver::net::HttpResponse> &resp);
 
     bool handleCreateFolder(
         const fileserver::net::TcpConnectionPtr &conn,
@@ -54,6 +61,49 @@ class FileHandler : public handlerUtils {
     bool handleListFolders(const fileserver::net::TcpConnectionPtr &conn,
                            fileserver::net::HttpRequest &req,
                            std::shared_ptr<fileserver::net::HttpResponse> &resp);
+    bool handleDeleteFolder(const fileserver::net::TcpConnectionPtr &conn,
+                            fileserver::net::HttpRequest &req,
+                            std::shared_ptr<fileserver::net::HttpResponse> &resp);
+
+    bool handleListVideoNotes(
+        const fileserver::net::TcpConnectionPtr &conn,
+        fileserver::net::HttpRequest &req,
+        std::shared_ptr<fileserver::net::HttpResponse> &resp);
+
+    bool handleCreateVideoNote(
+        const fileserver::net::TcpConnectionPtr &conn,
+        fileserver::net::HttpRequest &req,
+        std::shared_ptr<fileserver::net::HttpResponse> &resp);
+
+    bool handleListVideoSegments(
+        const fileserver::net::TcpConnectionPtr &conn,
+        fileserver::net::HttpRequest &req,
+        std::shared_ptr<fileserver::net::HttpResponse> &resp);
+
+    bool handleCreateVideoSegment(
+        const fileserver::net::TcpConnectionPtr &conn,
+        fileserver::net::HttpRequest &req,
+        std::shared_ptr<fileserver::net::HttpResponse> &resp);
+
+    bool handleDeleteVideoSegment(
+        const fileserver::net::TcpConnectionPtr &conn,
+        fileserver::net::HttpRequest &req,
+        std::shared_ptr<fileserver::net::HttpResponse> &resp);
+
+    bool handleListStudyCollections(
+        const fileserver::net::TcpConnectionPtr &conn,
+        fileserver::net::HttpRequest &req,
+        std::shared_ptr<fileserver::net::HttpResponse> &resp);
+
+    bool handleStudyCollectionAction(
+        const fileserver::net::TcpConnectionPtr &conn,
+        fileserver::net::HttpRequest &req,
+        std::shared_ptr<fileserver::net::HttpResponse> &resp);
+
+    bool handleUpdateVideoProgress(
+        const fileserver::net::TcpConnectionPtr &conn,
+        fileserver::net::HttpRequest &req,
+        std::shared_ptr<fileserver::net::HttpResponse> &resp);
 
   private:
     std::string generateUniqueFilename(const std::string &prefix);

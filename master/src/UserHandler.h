@@ -30,6 +30,11 @@ class UserHandler : public handlerUtils {
                           fn::HttpRequest &req,
                           std::shared_ptr<fn::HttpResponse> &resp);
 
+    // 用户手动切换学习/开发/通用模式
+    bool handleUpdateSceneMode(const fn::TcpConnectionPtr &conn,
+                               fn::HttpRequest &req,
+                               std::shared_ptr<fn::HttpResponse> &resp);
+
     // 搜索用户
     bool handleSearchUsers(const fn::TcpConnectionPtr &conn,
                            fn::HttpRequest &req,
@@ -60,6 +65,7 @@ class UserHandler : public handlerUtils {
 
   private:
     void ensureServiceLevelColumn();
+    void ensureAdminColumn();
     std::string generateShareCode();
     std::string generateExtractCode();
 

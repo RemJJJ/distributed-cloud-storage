@@ -46,6 +46,9 @@ class MasterHttpHandler : public BaseHandler {
         loop->runEvery(60.0,
                        std::bind(&MasterHttpHandler::processStaleUploadingFiles,
                                  this, loop));
+        loop->runEvery(60.0,
+                       std::bind(&MasterHttpHandler::processExpiredRecycleBin,
+                                 this, loop));
         loop->runEvery(10.0, std::bind(&MasterHttpHandler::processHotCacheTasks,
                                        this, loop));
         LOG_INFO << "Async garbage collection timer start";
@@ -63,5 +66,6 @@ class MasterHttpHandler : public BaseHandler {
 
     void processGarbageCollection(EventLoop *loop);
     void processStaleUploadingFiles(EventLoop *loop);
+    void processExpiredRecycleBin(EventLoop *loop);
     void processHotCacheTasks(EventLoop *loop);
 };

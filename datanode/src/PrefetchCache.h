@@ -168,6 +168,51 @@ class PrefetchCache {
         return continuousBytes;
     }
 
+    void invalidateFile(const std::string &filepath) {
+        const std::string keyPrefix = filepath + "_";
+        size_t removedBytes = 0;
+        size_t removedNormalBytes = 0;
+        size_t removedEntries = 0;
+
+        for (auto &shard : shards_) {
+            std::unique_lock<std::shared_mutex> lock(shard.mutex);
+            for (auto it = shard.entries.begin(); it != shard.entries.end();) {
+                if (it->first.rfind(keyPrefix, 0) == 0) {
+                    removedBytes += it->second->size;
+                    if (!it->second->isVip) {
+                        removedNormalBytes += it->second->size;
+                    }
+                    ++removedEntries;
+                    it = shard.entries.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+
+            for (auto it = shard.loadingKeys.begin();
+                 it != shard.loadingKeys.end();) {
+                if (it->rfind(keyPrefix, 0) == 0) {
+                    it = shard.loadingKeys.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+        }
+
+        if (removedBytes > 0) {
+            currentBytes_.fetch_sub(removedBytes, std::memory_order_relaxed);
+        }
+        if (removedNormalBytes > 0) {
+            normalBytes_.fetch_sub(removedNormalBytes,
+                                   std::memory_order_relaxed);
+        }
+        if (removedEntries > 0) {
+            LOG_INFO << "Invalidated prefetch cache for file " << filepath
+                     << ", removed_entries=" << removedEntries
+                     << ", removed_bytes=" << removedBytes;
+        }
+    }
+
   private:
     struct CacheEntry {
         BufferPtr data;

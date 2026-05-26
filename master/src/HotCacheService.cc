@@ -68,7 +68,7 @@ void HotCacheService::recordAccess(int fileId, const std::string &nodeId,
     entry.hotScore += calculateAccessScore(serviceLevel, sceneTag);
     // 更新统计画像
     entry.totalHits += 1;
-    if (serviceLevel == "vip") {
+    if (serviceLevel == "vip" || serviceLevel == "svip") {
         entry.vipHits += 1;
     }
     if (sceneTag == "learning") {
@@ -197,7 +197,9 @@ HotCacheService::buildEntryKey(const std::string &nodeId,
 int HotCacheService::calculateAccessScore(const std::string &serviceLevel,
                                           const std::string &sceneTag) const {
     // VIP用户一次加40，普通用户一次10分，学习场景加成:如果是learning场景，额外加6分
-    int score = (serviceLevel == "vip") ? vipAccessScore_ : normalAccessScore_;
+    int score = (serviceLevel == "vip" || serviceLevel == "svip")
+                    ? vipAccessScore_
+                    : normalAccessScore_;
     if (sceneTag == "learning") {
         score += learningBonusScore_;
     }

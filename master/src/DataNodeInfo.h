@@ -6,9 +6,22 @@
 #include <cstdint>
 #include <jwt-cpp/jwt.h>
 #include <string>
+#include <vector>
 #include <uuid/uuid.h>
 
 namespace fn = fileserver::net;
+
+struct ActiveUserSessionInfo {
+    std::string nodeId_;
+    int userId_ = 0;
+    std::string username_;
+    std::string serviceLevel_ = "normal";
+    std::string sceneTag_ = "general";
+    std::string transferType_;
+    std::string fileName_;
+    uint64_t currentBps_ = 0;
+    std::string startedAt_;
+};
 
 struct DataNodeInfo {
     fn::InetAddress addr_;
@@ -22,6 +35,12 @@ struct DataNodeInfo {
     int activeUploads_ = 0;
     int activeDownloads_ = 0;
     int activeTransfers_ = 0;
+    bool isManuallyDisabled_ = false;
+    uint64_t nodeBandwidthLimitBps_ = 0;
+    uint64_t uploadBps_ = 0;
+    uint64_t downloadBps_ = 0;
+    int connectedUsers_ = 0;
+    std::vector<ActiveUserSessionInfo> activeUserSessions_;
     double currentScore_ = 0.0;
 
     DataNodeInfo(const fn::InetAddress &addr) : addr_(addr), isAlive_(true) {

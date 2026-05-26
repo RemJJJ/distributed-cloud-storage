@@ -29,7 +29,8 @@ bool TokenManager::isInitialized() { return instance().initialized_; }
 // 生成用户token
 TokenManager::userLoginResponse
 TokenManager::generateUserToken(int userId, const std::string &username,
-                                const std::string &service_level) {
+                                const std::string &service_level,
+                                bool is_admin) {
     auto now = std::chrono::system_clock::now();
     std::string token;
     try {
@@ -43,6 +44,9 @@ TokenManager::generateUserToken(int userId, const std::string &username,
                     .set_payload_claim("username", jwt::claim(username))
                     .set_payload_claim("service_level",
                                        jwt::claim(service_level))
+                    .set_payload_claim(
+                        "is_admin",
+                        jwt::claim(std::string(is_admin ? "1" : "0")))
                     .set_issued_at(now)
                     .set_expires_at(
                         now + std::chrono::hours(24)) // 用户登录有效期 24 小时
@@ -59,6 +63,7 @@ TokenManager::generateUserToken(int userId, const std::string &username,
 // 生成文件上传token
 TokenManager::fileUploadResponse TokenManager::generateUploadToken(
     int userId, uint64_t file_id, const std::string &node_id,
+    const std::string &username,
     const std::string &original_filename, const std::string &server_filename,
     const std::string &created_time, const std::string &scene_tag,
     bool batch_mode, const QoSPolicy &qos_policy) {
@@ -72,6 +77,7 @@ TokenManager::fileUploadResponse TokenManager::generateUploadToken(
                                        jwt::claim(std::string("upload")))
                     .set_payload_claim("user_id",
                                        jwt::claim(std::to_string(userId)))
+                    .set_payload_claim("username", jwt::claim(username))
                     .set_payload_claim("file_id",
                                        jwt::claim(std::to_string(file_id)))
                     .set_payload_claim("node_id", jwt::claim(node_id))
@@ -116,9 +122,14 @@ TokenManager::fileUploadResponse TokenManager::generateUploadToken(
 // 生成下载Token
 std::string
 TokenManager::generateDownloadToken(int userId,
+                                    const std::string &username,
                                     const std::string &original_filename,
                                     const std::string &server_filename,
                                     const std::string &scene_tag,
+                                    const std::string &access_mode,
+                                    const std::string &video_quality,
+                                    const std::string &watermark_mode,
+                                    const std::string &watermark_text,
                                     const QoSPolicy &qos_policy) {
     auto now = std::chrono::system_clock::now();
     std::string token;
@@ -130,11 +141,19 @@ TokenManager::generateDownloadToken(int userId,
                                        jwt::claim(std::string("download")))
                     .set_payload_claim("user_id",
                                        jwt::claim(std::to_string(userId)))
+                    .set_payload_claim("username", jwt::claim(username))
                     .set_payload_claim("server_filename",
                                        jwt::claim(server_filename))
                     .set_payload_claim("original_filename",
                                        jwt::claim(original_filename))
                     .set_payload_claim("scene_tag", jwt::claim(scene_tag))
+                    .set_payload_claim("access_mode", jwt::claim(access_mode))
+                    .set_payload_claim("video_quality",
+                                       jwt::claim(video_quality))
+                    .set_payload_claim("watermark_mode",
+                                       jwt::claim(watermark_mode))
+                    .set_payload_claim("watermark_text",
+                                       jwt::claim(watermark_text))
                     .set_payload_claim("service_level",
                                        jwt::claim(qos_policy.service_level))
                     .set_payload_claim("qos_mode",
@@ -270,6 +289,32 @@ int TokenManager::verifyUserToken(const std::string &token) {
     }
 }
 
+int TokenManager::verifyAdminToken(const std::string &token) {
+    auto result = verifyToken(token);
+    if (!result.success) {
+        LOG_WARN << "管理员 Token 验证失败: " << result.error;
+        return -1;
+    }
+
+    if (result.payload.value("token_type", "") != "user") {
+        LOG_WARN << "Token 类型不匹配，期望 user";
+        return -1;
+    }
+
+    const std::string isAdmin =
+        result.payload.value("is_admin", std::string("0"));
+    if (!(isAdmin == "1" || isAdmin == "true")) {
+        LOG_WARN << "当前用户没有管理员权限";
+        return -1;
+    }
+
+    try {
+        return std::stoi(result.payload.value("user_id", "-1"));
+    } catch (...) {
+        return -1;
+    }
+}
+
 std::string TokenManager::verifyNodeToken(const std::string &token) {
     auto result = verifyToken(token);
     if (!result.success) {
@@ -299,6 +344,8 @@ bool TokenManager::verifyUploadToken(const std::string &token,
     }
 
     try {
+        out_payload.user_id = std::stoi(result.payload.value("user_id", "0"));
+        out_payload.username = result.payload.value("username", "");
         out_payload.file_id = std::stoull(result.payload.value("file_id", "0"));
         out_payload.original_filename =
             result.payload.value("original_filename", "");
@@ -332,8 +379,21 @@ bool TokenManager::verifyDownloadToken(const std::string &token,
     }
     out_payload.original_filename =
         result.payload.value("original_filename", "");
+    try {
+        out_payload.user_id = std::stoi(result.payload.value("user_id", "0"));
+    } catch (...) {
+        out_payload.user_id = 0;
+    }
+    out_payload.username = result.payload.value("username", "");
     out_payload.server_filename = result.payload.value("server_filename", "");
     out_payload.scene_tag = result.payload.value("scene_tag", "general");
+    out_payload.access_mode = result.payload.value("access_mode", "download");
+    out_payload.video_quality =
+        result.payload.value("video_quality", "original");
+    out_payload.watermark_mode =
+        result.payload.value("watermark_mode", "none");
+    out_payload.watermark_text =
+        result.payload.value("watermark_text", "");
     out_payload.qos_policy = parseQoSPolicy(result.payload);
     return !out_payload.server_filename.empty();
 }

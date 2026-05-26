@@ -14,6 +14,8 @@ namespace {
 constexpr uint64_t kNormalQuotaBytes = 5ULL * 1024ULL * 1024ULL * 1024ULL;
 // VIP用户:20GB
 constexpr uint64_t kVipQuotaBytes = 20ULL * 1024ULL * 1024ULL * 1024ULL;
+// SVIP用户:50GB
+constexpr uint64_t kSvipQuotaBytes = 50ULL * 1024ULL * 1024ULL * 1024ULL;
 } // namespace
 
 void StorageFeatureService::ensureSchema() {
@@ -33,13 +35,25 @@ void StorageFeatureService::ensureSchema() {
 
 std::string
 StorageFeatureService::normalizeServiceLevel(const std::string &serviceLevel) {
-    return serviceLevel == "vip" ? "vip" : "normal";
+    if (serviceLevel == "svip") {
+        return "svip";
+    }
+    if (serviceLevel == "vip") {
+        return "vip";
+    }
+    return "normal";
 }
 
 uint64_t StorageFeatureService::getQuotaBytesByServiceLevel(
     const std::string &serviceLevel) const {
-    return normalizeServiceLevel(serviceLevel) == "vip" ? kVipQuotaBytes
-                                                        : kNormalQuotaBytes;
+    const std::string normalized = normalizeServiceLevel(serviceLevel);
+    if (normalized == "svip") {
+        return kSvipQuotaBytes;
+    }
+    if (normalized == "vip") {
+        return kVipQuotaBytes;
+    }
+    return kNormalQuotaBytes;
 }
 
 std::string StorageFeatureService::getUserServiceLevel(
@@ -66,7 +80,8 @@ StorageFeatureService::getStorageSummary(db::MySQLPool::ConnectionGuard &mysql,
     StorageSummary summary;
     // VIP还是普通用户
     summary.serviceLevel = getUserServiceLevel(mysql, userId);
-    summary.isVip = summary.serviceLevel == "vip";
+    summary.isVip =
+        (summary.serviceLevel == "vip" || summary.serviceLevel == "svip");
     // 根据等级赋予总容量
     summary.quotaBytes = getQuotaBytesByServiceLevel(summary.serviceLevel);
     // 统计目前已经上传多少字节

@@ -51,7 +51,7 @@ void HttpServer::onMessage(const TcpConnectionPtr &conn, Buffer *buf,
     }
 
     HttpContext::ParseResult result = context->parseRequest(buf, receiveTime);
-    LOG_INFO << "result = " << result;
+    LOG_DEBUG << "result = " << result;
     if (result == HttpContext::kError) { // 解析出错
         conn->send("HTTP/1.1 400 Bad Request\r\n\r\n");
         conn->shutdown();

@@ -22,6 +22,8 @@ class TokenManager {
     };
 
     struct uploadTokenPayload {
+        int user_id = 0;
+        std::string username;
         uint64_t file_id = 0;
         std::string original_filename;
         std::string server_filename;
@@ -32,9 +34,15 @@ class TokenManager {
     };
 
     struct downloadTokenPayload {
+        int user_id = 0;
+        std::string username;
         std::string original_filename;
         std::string server_filename;
         std::string scene_tag = "general";
+        std::string access_mode = "download";
+        std::string video_quality = "original";
+        std::string watermark_mode = "none";
+        std::string watermark_text;
         QoSPolicy qos_policy;
     };
 
@@ -101,7 +109,8 @@ class TokenManager {
     /// @brief 生成用户登录Token
     userLoginResponse generateUserToken(int userId,
                                         const std::string &username,
-                                        const std::string &service_level);
+                                        const std::string &service_level,
+                                        bool is_admin);
 
     /// @brief 生成datanodeToken
     nodeRegisterResponse
@@ -111,6 +120,7 @@ class TokenManager {
     /// @brief 生成文件上传token
     fileUploadResponse generateUploadToken(int userId, uint64_t file_id,
                                            const std::string &node_id,
+                                           const std::string &username,
                                            const std::string &original_filename,
                                            const std::string &server_filename,
                                            const std::string &created_time,
@@ -120,9 +130,14 @@ class TokenManager {
 
     /// @brief 生成文件下载token
     std::string generateDownloadToken(int userId,
+                                      const std::string &username,
                                       const std::string &original_filename,
                                       const std::string &server_filename,
                                       const std::string &scene_tag,
+                                      const std::string &access_mode,
+                                      const std::string &video_quality,
+                                      const std::string &watermark_mode,
+                                      const std::string &watermark_text,
                                       const QoSPolicy &qos_policy);
 
     /// @brief 生成文件删除Token
@@ -138,6 +153,7 @@ class TokenManager {
 
     /// @brief 验证用户登录Token
     int verifyUserToken(const std::string &token);
+    int verifyAdminToken(const std::string &token);
 
     /// @brief 验证datanode Token
     std::string verifyNodeToken(const std::string &token);

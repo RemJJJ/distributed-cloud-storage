@@ -122,11 +122,9 @@
                 const downloadUrl = `${result.data.downloadUrl}?token=${result.data.token}`;
                 
                 btn.textContent = '开始下载...';
-                
-                // 创建一个隐藏的 a 标签触发下载
+
                 const a = document.createElement('a');
                 a.href = downloadUrl;
-                // 注意：跨域情况下 a.download 可能失效，主要靠后端的 Content-Disposition 头来指定文件名
                 document.body.appendChild(a);
                 a.click();
                 document.body.removeChild(a);
@@ -168,6 +166,7 @@
                 <p style="color: #666; margin-top: 15px; font-size: 0.9em;">请检查链接是否正确，或联系分享者重新分享。</p>
             `;
         }
+
     </script>
 </body>
 </html>

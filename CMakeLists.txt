@@ -27,14 +27,26 @@ set(MUDUO_ROOT ${CMAKE_SOURCE_DIR}/third_party/muduo)
 # muduo头文件路径（因为muduo头文件是<muduo/base/...>，所以包含到MUDUO_ROOT）
 set(MUDUO_INCLUDE_DIRS ${MUDUO_ROOT})
 
-# muduo库文件路径（预编译的静态库在build目录）
-set(MUDUO_LIBRARY_DIRS ${MUDUO_ROOT}/build)
+# 直接把仿写的 muduo 源码纳入当前工程构建图。
+# 这样每次编译 master / datanode 时，若 muduo 源码有变更，也会自动重新编译，
+# 不再依赖 third_party/muduo/build 里的旧静态库。
+file(GLOB MUDUO_BASE_SOURCES CONFIGURE_DEPENDS
+    ${MUDUO_ROOT}/base/*.cc
+)
+file(GLOB MUDUO_NET_SOURCES CONFIGURE_DEPENDS
+    ${MUDUO_ROOT}/net/*.cc
+    ${MUDUO_ROOT}/net/Poller/*.cc
+)
 
-# muduo需要链接的库（根据你的muduo编译结果调整，通常是net+base+pthread）
+add_library(muduo_base STATIC ${MUDUO_BASE_SOURCES})
+target_include_directories(muduo_base PUBLIC ${MUDUO_ROOT})
+target_link_libraries(muduo_base PUBLIC pthread)
+
+add_library(muduo_net STATIC ${MUDUO_NET_SOURCES})
+target_include_directories(muduo_net PUBLIC ${MUDUO_ROOT})
+target_link_libraries(muduo_net PUBLIC muduo_base pthread)
+
 set(MUDUO_LIBRARIES muduo_net muduo_base pthread)
-
-# 将muduo库路径加入链接搜索目录
-link_directories(${MUDUO_LIBRARY_DIRS})
 
 # 将muduo和MySQL的头文件路径加入全局搜索路径
 include_directories(
@@ -79,4 +91,5 @@ add_subdirectory(master)
 
 # -------------------------- 静态资源处理 --------------------------
 # 将web/html复制到build目录，方便运行时直接访问
+file(MAKE_DIRECTORY ${CMAKE_BINARY_DIR}/html)
 file(COPY ${CMAKE_SOURCE_DIR}/web/html DESTINATION ${CMAKE_BINARY_DIR})

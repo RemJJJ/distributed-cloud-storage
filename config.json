@@ -20,7 +20,15 @@
         "master_port": 8000,
         "local_host": "",
         "local_port": 9000,
-        "public_url": ""
+        "public_url": "",
+        "transcode": {
+            "enable_gpu": true,
+            "fallback_to_cpu": true,
+            "gpu_encoder": "h264_nvenc",
+            "gpu_index": 0,
+            "cpu_encoder": "libx264",
+            "max_background_jobs": 2
+        }
     },
     "qos": {
     "enabled": true,

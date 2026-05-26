@@ -80,6 +80,7 @@ class MasterClient {
     /// @brief 解析JSON Body
     void parseResponseBody(const std::string &body);
     void handleReportFilesResponse(const nlohmann::json &respJson);
+    void handleAdminPolicyResponse(const nlohmann::json &respJson);
 
     /// @brief 全量扫描本地文件并汇报给Master
     void reportLocalFiles();

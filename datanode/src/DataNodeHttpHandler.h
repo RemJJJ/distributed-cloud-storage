@@ -2,6 +2,7 @@
 #include "BaseHandler.h"
 #include "FileStorage.h"
 #include "PrefetchCache.h"
+#include "TokenManager.h"
 #include "TokenBucketRateLimiter.h"
 #include "base/Logging.h"
 #include "base/Thread.h"
@@ -13,10 +14,12 @@
 #include "net/HttpServer.h"
 #include <memory>
 #include <nlohmann/json.hpp>
+#include <deque>
 #include <ratio>
 #include <regex>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -73,6 +76,8 @@ class FileUploadContext {
     void setState(State state) { state_ = state; }
 
     bool releaseTransferCounter();
+    void setSessionId(const std::string &sessionId) { sessionId_ = sessionId; }
+    const std::string &getSessionId() const { return sessionId_; }
 
   private:
     uint64_t fileID_;                      // 文件ID
@@ -82,6 +87,7 @@ class FileUploadContext {
     uintmax_t totalBytes_; // 已写入字节数
     State state_;          // 当前状态
     std::string boundary_; // multipart边界
+    std::string sessionId_;
     bool transferCounterReleased_ = false;
 };
 
@@ -118,6 +124,8 @@ class FileDownContext {
         transferCounterReleased_ = true;
         return true;
     }
+    void setSessionId(const std::string &sessionId) { sessionId_ = sessionId; }
+    const std::string &getSessionId() const { return sessionId_; }
 
   private:
     bool shouldUsePrefetchCache() const;
@@ -138,6 +146,7 @@ class FileDownContext {
     uintmax_t fileSize_;        // 文件总大小
     uintmax_t currentPosition_; // 当前读取位置
     bool isComplete_;           // 是否完成
+    std::string sessionId_;
     bool transferCounterReleased_ = false;
 
     // 线程池指针
@@ -153,6 +162,13 @@ class DataNode;
 
 class DataNodeHttpHandler : public BaseHandler {
   private:
+    struct VideoTranscodeJob {
+        std::string sourcePath;
+        std::string serverFilename;
+        std::string originalFilename;
+        std::string quality;
+    };
+
     std::string uploadDir_; // 上传目录
     DataNode *datanode_;
     std::shared_ptr<PrefetchCache> prefetchCache_;
@@ -160,6 +176,12 @@ class DataNodeHttpHandler : public BaseHandler {
     std::mutex transferMutex_; // 连接数锁
     std::unordered_map<std::string, std::shared_ptr<ConnectionTransferState>>
         activeTransfers_;
+
+    std::mutex videoTranscodeMutex_;
+    std::deque<VideoTranscodeJob> videoTranscodeQueue_;
+    std::unordered_set<std::string> pendingVideoTranscodes_;
+    size_t activeVideoTranscodes_ = 0;
+    size_t maxConcurrentVideoTranscodes_ = 2;
 
     ThreadPool threadPool_;
 
@@ -185,9 +207,24 @@ class DataNodeHttpHandler : public BaseHandler {
 
     bool handleTextPreview(const TcpConnectionPtr &conn, HttpRequest &req,
                            std::shared_ptr<HttpResponse> &resp);
+    bool handleHlsPlaylist(const TcpConnectionPtr &conn, HttpRequest &req,
+                           std::shared_ptr<HttpResponse> &resp);
+    bool handleHlsSegment(const TcpConnectionPtr &conn, HttpRequest &req,
+                          std::shared_ptr<HttpResponse> &resp);
+    bool handleTextEdit(const TcpConnectionPtr &conn, HttpRequest &req,
+                        std::shared_ptr<HttpResponse> &resp);
+    bool handleTextSnapshot(const TcpConnectionPtr &conn, HttpRequest &req,
+                            std::shared_ptr<HttpResponse> &resp);
+    bool handleTextRollback(const TcpConnectionPtr &conn, HttpRequest &req,
+                            std::shared_ptr<HttpResponse> &resp);
+    bool handleTextExperiment(const TcpConnectionPtr &conn, HttpRequest &req,
+                              std::shared_ptr<HttpResponse> &resp);
 
     bool handleHotCache(const TcpConnectionPtr &conn, HttpRequest &req,
                         std::shared_ptr<HttpResponse> &resp);
+    void scheduleVideoPreviewWarmup(const std::string &serverFilename,
+                                    const std::string &originalFilename,
+                                    uint64_t fileSize);
 
     /// @brief 处理文件删除
     bool handleDeleteFile(const TcpConnectionPtr &conn, HttpRequest &req,
@@ -196,6 +233,12 @@ class DataNodeHttpHandler : public BaseHandler {
     bool isPreviewableTextFile(const std::string &filename) const;
     void scheduleHotCacheWarmup(const std::string &serverFilename,
                                 uint64_t preloadBytes, bool vipPriority);
-
+    void enqueueVideoTranscodeJob(const std::string &sourcePath,
+                                  const std::string &serverFilename,
+                                  const std::string &originalFilename,
+                                  const std::string &quality);
+    void scheduleNextVideoTranscode();
+    void scheduleHlsGeneration(const std::string &sourcePath,
+                               const TokenManager::downloadTokenPayload &payload);
     std::string getMimeType(const std::string &filename);
 };
